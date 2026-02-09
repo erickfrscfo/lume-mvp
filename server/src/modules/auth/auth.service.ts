@@ -1,5 +1,5 @@
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
+import jwt, { Secret, SignOptions } from "jsonwebtoken";
 import { prisma } from "../../shared/database.js";
 import { env } from "../../config/env.js";
 import { AppError, UnauthorizedError } from "../../shared/errors.js";
@@ -94,8 +94,8 @@ export async function register(input: RegisterInput) {
       companyId: result.company.id,
       role: result.user.role,
     },
-    env.JWT_SECRET,
-    { expiresIn: env.JWT_EXPIRES_IN }
+        env.JWT_SECRET as Secret,
+    { expiresIn: env.JWT_EXPIRES_IN } as SignOptions
   );
 
   return {
@@ -146,8 +146,8 @@ export async function login(input: LoginInput) {
       companyId: company.id,
       role: user.role,
     },
-    env.JWT_SECRET,
-    { expiresIn: env.JWT_EXPIRES_IN }
+        env.JWT_SECRET as Secret,
+    { expiresIn: env.JWT_EXPIRES_IN } as SignOptions
   );
 
   return {
