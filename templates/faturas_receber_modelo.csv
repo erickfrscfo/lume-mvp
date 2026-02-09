@@ -1,0 +1,6 @@
+numero_fatura,cliente,data_emissao,data_vencimento,valor,status,data_pagamento,observacao
+NF-2026-001,Tech Solutions Ltda,02/01/2026,02/02/2026,8500.00,PAGA,28/01/2026,Projeto site
+NF-2026-002,ABC Corp,05/01/2026,05/02/2026,4200.00,PENDENTE,,Mensalidade fevereiro
+NF-2026-003,Inova Comércio SA,10/01/2026,10/02/2026,6800.00,PENDENTE,,Consultoria
+NF-2026-004,StartUp Digital,15/01/2026,15/02/2026,3500.00,ATRASADA,,Desenvolvimento app
+NF-2026-005,Grupo Varejo,20/01/2026,20/02/2026,12000.00,PENDENTE,,Projeto Delta

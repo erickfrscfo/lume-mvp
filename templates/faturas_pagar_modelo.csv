@@ -1,0 +1,8 @@
+descricao,fornecedor,data_vencimento,valor,status,recorrente,categoria,observacao
+Aluguel escritório - Fevereiro,Imobiliária Centro,05/02/2026,3200.00,PENDENTE,SIM,,Contrato até dez/26
+Conta de energia - Fevereiro,CEMIG,10/02/2026,720.00,PENDENTE,SIM,,Escritório centro
+Salários - Fevereiro,Folha de Pagamento,05/02/2026,15800.00,PENDENTE,SIM,,3 funcionários CLT
+DAS Simples - Fevereiro,Receita Federal,20/02/2026,1850.00,PENDENTE,SIM,,Imposto mensal
+Fornecedor Materiais SA,Materiais SA,15/02/2026,4200.00,PENDENTE,NAO,,Pedido #789
+Assinatura AWS,Amazon,01/02/2026,890.00,PAGA,SIM,,Débito automático
+Google Ads - Fevereiro,Google,28/02/2026,1500.00,PENDENTE,SIM,,Campanha mensal

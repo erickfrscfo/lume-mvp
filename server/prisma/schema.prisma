@@ -1,0 +1,207 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// EMPRESA
+// ============================================
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  cnpj      String   @unique
+  sector    String
+  code      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users        User[]
+  transactions Transaction[]
+  scenarios    Scenario[]
+
+  @@index([code])
+  @@index([cnpj])
+}
+
+// ============================================
+// USUÁRIO
+// ============================================
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  username  String   @unique
+  email     String   @unique
+  password  String
+  role      Role     @default(USER)
+  companyId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company        Company          @relation(fields: [companyId], references: [id])
+  uploads        Upload[]
+  aiInteractions AiInteraction[]
+
+  @@index([username])
+  @@index([email])
+  @@index([companyId])
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+// ============================================
+// UPLOAD DE ARQUIVOS
+// ============================================
+model Upload {
+  id           String       @id @default(cuid())
+  userId       String
+  filename     String
+  originalName String
+  status       UploadStatus @default(PROCESSING)
+  rowCount     Int          @default(0)
+  errorCount   Int          @default(0)
+  errorDetails Json?
+  createdAt    DateTime     @default(now())
+
+  user         User          @relation(fields: [userId], references: [id])
+  transactions Transaction[]
+
+  @@index([userId])
+}
+
+enum UploadStatus {
+  PROCESSING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+// ============================================
+// CATEGORIAS CONTÁBEIS
+// ============================================
+model Category {
+  id          String          @id @default(cuid())
+  name        String
+  type        TransactionType
+  parentId    String?
+  description String?
+  code        String          @unique
+  isDefault   Boolean         @default(true)
+
+  parent       Category?     @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children     Category[]    @relation("CategoryHierarchy")
+  transactions Transaction[]
+
+  @@index([type])
+  @@index([parentId])
+}
+
+// ============================================
+// TRANSAÇÕES FINANCEIRAS
+// ============================================
+model Transaction {
+  id           String          @id @default(cuid())
+  companyId    String
+  uploadId     String?
+  date         DateTime
+  description  String
+  amount       Decimal         @db.Decimal(15, 2)
+  type         TransactionType
+  categoryId   String?
+  aiClassified Boolean         @default(false)
+  confidence   Decimal?        @db.Decimal(3, 2)
+  notes        String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  company  Company   @relation(fields: [companyId], references: [id])
+  upload   Upload?   @relation(fields: [uploadId], references: [id])
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@index([companyId, date])
+  @@index([companyId, type])
+  @@index([categoryId])
+  @@index([uploadId])
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+}
+
+// ============================================
+// CENÁRIOS FINANCEIROS
+// ============================================
+model Scenario {
+  id          String       @id @default(cuid())
+  companyId   String
+  name        String
+  type        ScenarioType
+  description String?
+  adjustments Json
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId])
+}
+
+enum ScenarioType {
+  PROJECT
+  ORGANIZATIONAL_CHANGE
+  INVESTMENT
+  DIVESTMENT
+}
+
+// ============================================
+// INTERAÇÕES COM IA
+// ============================================
+model AiInteraction {
+  id               String            @id @default(cuid())
+  userId           String
+  type             AiInteractionType
+  promptTemplateId String?
+  promptSent       String
+  responseReceived String
+  tokenUsage       Json
+  model            String
+  latencyMs        Int
+  createdAt        DateTime          @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+enum AiInteractionType {
+  CLASSIFICATION
+  EXPLANATION
+  CHAT
+  ANALYSIS
+}
+
+// ============================================
+// TEMPLATES DE PROMPTS
+// ============================================
+model PromptTemplate {
+  id        String            @id @default(cuid())
+  name      String
+  type      AiInteractionType
+  version   Int               @default(1)
+  content   String
+  isActive  Boolean           @default(true)
+  createdAt DateTime          @default(now())
+
+  @@unique([name, version])
+  @@index([type, isActive])
+}

@@ -1,0 +1,16 @@
+data,descricao,valor,tipo,categoria,observacao
+05/01/2026,Pagamento cliente Tech Solutions - NF 1234,8500.00,ENTRADA,,Projeto site institucional
+05/01/2026,Aluguel escritório - Janeiro,3200.00,SAIDA,,Contrato anual
+07/01/2026,Venda produto X - Pedido #456,2300.00,ENTRADA,,E-commerce
+08/01/2026,Google Ads - Campanha Janeiro,1500.00,SAIDA,,Marketing digital
+10/01/2026,Salário João Silva - Janeiro,5500.00,SAIDA,,CLT
+10/01/2026,Salário Maria Santos - Janeiro,4800.00,SAIDA,,CLT
+12/01/2026,Conta de luz - Janeiro,680.00,SAIDA,,Escritório centro
+15/01/2026,Mensalidade cliente ABC Corp,4200.00,ENTRADA,,Plano Professional
+15/01/2026,Assinatura AWS - Janeiro,890.00,SAIDA,,Cloud hosting
+18/01/2026,Pagamento fornecedor Materiais SA,3400.00,SAIDA,,Matéria-prima
+20/01/2026,Comissão vendedor Pedro,850.00,SAIDA,,5% sobre vendas
+22/01/2026,Rendimento CDB Banco Inter,120.00,ENTRADA,,Aplicação financeira
+25/01/2026,DAS Simples Nacional - Janeiro,1850.00,SAIDA,,Imposto mensal
+28/01/2026,Venda consultoria - Projeto Delta,12000.00,ENTRADA,,Consultoria estratégica
+30/01/2026,Internet e telefone - Janeiro,350.00,SAIDA,,Vivo Empresas
