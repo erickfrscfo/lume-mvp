@@ -111,14 +111,24 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
       const valorStr = (record.valor || record.Valor || record.VALOR || record.amount || "")
         .toString()
         .replace(",", ".");
-      const amount = parseFloat(valorStr);
-      if (isNaN(amount) || amount <= 0) {
+      const rawAmount = parseFloat(valorStr);
+      if (isNaN(rawAmount) || rawAmount === 0) {
         errors.push({ line, error: `Valor inválido: ${valorStr}` });
         return;
       }
+      // Aceitar valores negativos — usar Math.abs e inferir tipo se necessário
+      const amount = Math.abs(rawAmount);
+      // Se valor é negativo e não tem tipo definido, inferir como SAIDA
+      const isNegativeValue = rawAmount < 0;
 
       // Validar tipo
-      const tipoStr = (record.tipo || record.Tipo || record.TIPO || record.type || "").toUpperCase();
+      let tipoStr = (record.tipo || record.Tipo || record.TIPO || record.type || "").toUpperCase();
+      // Se tipo está vazio mas valor é negativo, inferir como SAIDA
+      if (!tipoStr && isNegativeValue) {
+        tipoStr = "SAIDA";
+      } else if (!tipoStr && !isNegativeValue) {
+        tipoStr = "ENTRADA";
+      }
       if (tipoStr !== "ENTRADA" && tipoStr !== "SAIDA" && tipoStr !== "INCOME" && tipoStr !== "EXPENSE") {
         errors.push({ line, error: `Tipo inválido: ${tipoStr}. Use ENTRADA ou SAIDA` });
         return;

@@ -7,7 +7,7 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().startsWith("sk-"),
   PORT: z.coerce.number().default(3001),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  CORS_ORIGIN: z.string().default("http://localhost:5173"),
+  CORS_ORIGIN: z.string().default("*"),
 });
 
 export type Env = z.infer<typeof envSchema>;
