@@ -189,9 +189,18 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 50;
     const type = req.query.type as string;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
 
     const where: any = { companyId };
     if (type === "INCOME" || type === "EXPENSE") where.type = type;
+
+    // Filtro de data
+    if (startDate || endDate) {
+      where.date = {};
+      if (startDate) where.date.gte = new Date(startDate + "T00:00:00.000Z");
+      if (endDate) where.date.lte = new Date(endDate + "T23:59:59.999Z");
+    }
 
     const [transactions, total] = await Promise.all([
       prisma.transaction.findMany({
