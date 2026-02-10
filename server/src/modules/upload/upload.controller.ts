@@ -5,6 +5,7 @@ import fs from "fs";
 import { authMiddleware } from "../auth/auth.middleware.js";
 import { prisma } from "../../shared/database.js";
 import * as aiService from "../ai/ai.service.js";
+import { generateAlerts } from "../alerts/alerts.controller.js";
 
 const router = Router();
 
@@ -219,6 +220,9 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
 
     // Limpar arquivo temporário
     fs.unlinkSync(file.path);
+
+    // Gerar alertas inteligentes em background (não bloqueia a resposta)
+    generateAlerts(companyId, userId).catch((err) => console.error("[Alerts] Erro ao gerar alertas:", err));
 
     res.json({
       success: true,

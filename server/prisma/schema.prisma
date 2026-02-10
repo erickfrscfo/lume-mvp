@@ -22,6 +22,7 @@ model Company {
   users        User[]
   transactions Transaction[]
   scenarios    Scenario[]
+  alerts       Alert[]
 
   @@index([code])
   @@index([cnpj])
@@ -204,4 +205,32 @@ model PromptTemplate {
 
   @@unique([name, version])
   @@index([type, isActive])
+}
+
+// ============================================
+// ALERTAS INTELIGENTES
+// ============================================
+model Alert {
+  id               String    @id @default(cuid())
+  companyId        String
+  type             String
+  severity         String    @default("MEDIUM")
+  title            String
+  rawData          Json      @default("{}")
+  templateText     String    @default("")
+  humanizedText    String?
+  category         String?
+  potentialSavings Float?
+  isRead           Boolean   @default(false)
+  isDismissed      Boolean   @default(false)
+  dataHash         String?
+  expiresAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([companyId, isDismissed])
+  @@index([dataHash])
 }
