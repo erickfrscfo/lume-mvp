@@ -94,7 +94,11 @@ export async function register(input: RegisterInput) {
       companyId: result.company.id,
       role: result.user.role,
     },
+<<<<<<< HEAD
     env.JWT_SECRET as Secret,
+=======
+        env.JWT_SECRET as Secret,
+>>>>>>> bde7c7e08c9c73dc6eb38192318c40e75949981b
     { expiresIn: env.JWT_EXPIRES_IN } as SignOptions
   );
 
@@ -146,7 +150,11 @@ export async function login(input: LoginInput) {
       companyId: company.id,
       role: user.role,
     },
+<<<<<<< HEAD
     env.JWT_SECRET as Secret,
+=======
+        env.JWT_SECRET as Secret,
+>>>>>>> bde7c7e08c9c73dc6eb38192318c40e75949981b
     { expiresIn: env.JWT_EXPIRES_IN } as SignOptions
   );
 
