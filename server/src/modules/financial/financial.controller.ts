@@ -195,11 +195,22 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
     const where: any = { companyId };
     if (type === "INCOME" || type === "EXPENSE") where.type = type;
 
-    // Filtro de data
+    // Filtro de data (usar horário local, não UTC, para evitar problemas de fuso)
     if (startDate || endDate) {
       where.date = {};
-      if (startDate) where.date.gte = new Date(startDate + "T00:00:00.000Z");
-      if (endDate) where.date.lte = new Date(endDate + "T23:59:59.999Z");
+      if (startDate) {
+        // Início do dia no fuso GMT-3 = 03:00 UTC
+        where.date.gte = new Date(startDate + "T03:00:00.000Z");
+      }
+      if (endDate) {
+        // Fim do dia no fuso GMT-3 = próximo dia 02:59:59 UTC
+        where.date.lte = new Date(endDate + "T02:59:59.999Z");
+        // Adicionar 1 dia para cobrir o dia inteiro
+        const endDateObj = new Date(endDate + "T03:00:00.000Z");
+        endDateObj.setDate(endDateObj.getDate() + 1);
+        endDateObj.setMilliseconds(endDateObj.getMilliseconds() - 1);
+        where.date.lte = endDateObj;
+      }
     }
 
     const [transactions, total] = await Promise.all([
