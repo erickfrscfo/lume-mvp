@@ -19,31 +19,90 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
       where: { companyId, date: { gte: sixMonthsAgo } },
     });
 
-    // Calcular métricas
-    const thisMonthTx = transactions.filter((t) => t.date >= thisMonth);
-    const lastMonthTx = transactions.filter((t) => t.date >= lastMonth && t.date < thisMonth);
-
-    const currentIncome = thisMonthTx.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
-    const currentExpense = thisMonthTx.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
-    const lastIncome = lastMonthTx.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
-    const lastExpense = lastMonthTx.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
-
+    // Totais gerais
     const totalIncome = transactions.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
     const totalExpense = transactions.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
     const cashBalance = totalIncome - totalExpense;
 
-    const burnRate = currentExpense - currentIncome;
-    const lastBurnRate = lastExpense - lastIncome;
-    const burnChange = lastBurnRate > 0 ? ((burnRate - lastBurnRate) / lastBurnRate) * 100 : 0;
+    // ============================================
+    // BURN RATE CORRIGIDO
+    // Calcula a média mensal de (Despesas - Receitas) usando TODOS os meses com dados,
+    // não apenas o mês atual. Isso garante que funciona mesmo quando o mês atual
+    // ainda não tem transações.
+    // ============================================
 
-    const runway = burnRate > 0 ? cashBalance / burnRate : 99;
-    const growth = lastIncome > 0 ? ((currentIncome - lastIncome) / lastIncome) * 100 : 0;
+    // Agrupar transações por mês
+    const monthlyData: Record<string, { income: number; expense: number }> = {};
+    transactions.forEach((t) => {
+      const monthKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
+      if (!monthlyData[monthKey]) monthlyData[monthKey] = { income: 0, expense: 0 };
+      if (t.type === "INCOME") {
+        monthlyData[monthKey].income += Number(t.amount);
+      } else {
+        monthlyData[monthKey].expense += Number(t.amount);
+      }
+    });
+
+    const monthKeys = Object.keys(monthlyData).sort();
+    const numMonths = monthKeys.length;
+
+    // Net Burn Rate = média mensal de (despesas - receitas)
+    // Se positivo → empresa queima caixa
+    // Se zero ou negativo → empresa gera caixa
+    let avgNetBurn = 0;
+    if (numMonths > 0) {
+      const totalNetBurn = monthKeys.reduce((sum, mk) => {
+        return sum + (monthlyData[mk].expense - monthlyData[mk].income);
+      }, 0);
+      avgNetBurn = totalNetBurn / numMonths;
+    }
+
+    const burnRate = avgNetBurn > 0 ? avgNetBurn : 0;
+
+    // ============================================
+    // RUNWAY CORRIGIDO
+    // Runway = Saldo Total em Caixa / Net Burn Rate Mensal
+    // Se saldo <= 0 → runway = 0 (sem caixa)
+    // Se burn rate <= 0 → runway = 99 (empresa lucrativa, "infinito")
+    // ============================================
+    let runway: number;
+    if (cashBalance <= 0) {
+      runway = 0;
+    } else if (burnRate <= 0) {
+      runway = 99;
+    } else {
+      runway = cashBalance / burnRate;
+      if (runway > 99) runway = 99;
+    }
+
+    // Variação do saldo: comparar saldo total com saldo sem o último mês
+    const lastMonthKey = monthKeys.length > 0 ? monthKeys[monthKeys.length - 1] : null;
+    let cashBalanceChange = 0;
+    if (lastMonthKey && monthlyData[lastMonthKey]) {
+      const lastMonthNet = monthlyData[lastMonthKey].income - monthlyData[lastMonthKey].expense;
+      const previousBalance = cashBalance - lastMonthNet;
+      if (previousBalance !== 0) {
+        cashBalanceChange = ((cashBalance - previousBalance) / Math.abs(previousBalance)) * 100;
+      }
+    }
+
+    // Crescimento de receita (último mês com dados vs penúltimo)
+    let growth = 0;
+    if (monthKeys.length >= 2) {
+      const lastMk = monthKeys[monthKeys.length - 1];
+      const prevMk = monthKeys[monthKeys.length - 2];
+      const lastInc = monthlyData[lastMk].income;
+      const prevInc = monthlyData[prevMk].income;
+      if (prevInc > 0) {
+        growth = ((lastInc - prevInc) / prevInc) * 100;
+      }
+    }
 
     res.json({
       success: true,
       data: {
-        cashBalance: { value: cashBalance, change: ((cashBalance / (totalIncome - totalExpense + burnRate)) - 1) * 100 },
-        burnRate: { value: burnRate, change: burnChange },
+        cashBalance: { value: cashBalance, change: cashBalanceChange },
+        burnRate: { value: burnRate, change: 0 },
         runway: { value: runway, change: 0 },
         growth: { value: growth, change: 0 },
         transactionCount: transactions.length,
@@ -68,22 +127,27 @@ router.get("/cashflow", authMiddleware, async (req: Request, res: Response, next
     });
 
     // Agrupar por mês
-    const monthlyData: Record<string, { income: number; expense: number }> = {};
+    const monthlyMap: Record<string, { income: number; expense: number }> = {};
     transactions.forEach((t) => {
-      const key = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
-      if (!monthlyData[key]) monthlyData[key] = { income: 0, expense: 0 };
-      if (t.type === "INCOME") monthlyData[key].income += Number(t.amount);
-      else monthlyData[key].expense += Number(t.amount);
+      const monthKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
+      if (!monthlyMap[monthKey]) monthlyMap[monthKey] = { income: 0, expense: 0 };
+      if (t.type === "INCOME") {
+        monthlyMap[monthKey].income += Number(t.amount);
+      } else {
+        monthlyMap[monthKey].expense += Number(t.amount);
+      }
     });
 
-    const cashflow = Object.entries(monthlyData).map(([month, data]) => ({
-      month,
-      income: data.income,
-      expense: data.expense,
-      net: data.income - data.expense,
-    }));
+    const result = Object.entries(monthlyMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, data]) => ({
+        month,
+        income: data.income,
+        expense: data.expense,
+        net: data.income - data.expense,
+      }));
 
-    res.json({ success: true, data: cashflow });
+    res.json({ success: true, data: result });
   } catch (error) {
     next(error);
   }
@@ -142,8 +206,23 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
 
     res.json({
       success: true,
-      data: transactions,
-      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+      data: transactions.map((t) => ({
+        id: t.id,
+        date: t.date,
+        description: t.description,
+        amount: Number(t.amount),
+        type: t.type,
+        category: t.category ? { code: t.category.code, name: t.category.name } : null,
+        aiClassified: t.aiClassified,
+        confidence: t.confidence ? Number(t.confidence) : null,
+        notes: t.notes,
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     next(error);
@@ -151,31 +230,27 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
 });
 
 // POST /api/financial/transactions
-const createTransactionSchema = z.object({
-  date: z.string(),
-  description: z.string().min(1),
-  amount: z.number().positive(),
-  type: z.enum(["INCOME", "EXPENSE"]),
-  categoryId: z.string().optional(),
-  notes: z.string().optional(),
-});
-
 router.post("/transactions", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const data = createTransactionSchema.parse(req.body);
     const companyId = (req as any).companyId;
+    const { date, description, amount, type, notes } = req.body;
+
+    if (!date || !description || !amount || !type) {
+      return res.status(400).json({ success: false, error: "Campos obrigatórios: date, description, amount, type" });
+    }
 
     const transaction = await prisma.transaction.create({
       data: {
-        ...data,
-        date: new Date(data.date),
-        amount: data.amount,
         companyId,
+        date: new Date(date),
+        description,
+        amount: Math.abs(parseFloat(amount)),
+        type: type === "INCOME" || type === "ENTRADA" ? "INCOME" : "EXPENSE",
+        notes: notes || "",
       },
-      include: { category: true },
     });
 
-    res.status(201).json({ success: true, data: transaction });
+    res.json({ success: true, data: transaction });
   } catch (error) {
     next(error);
   }
@@ -185,10 +260,18 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
 router.delete("/transactions/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
-    await prisma.transaction.deleteMany({
-      where: { id: req.params.id, companyId },
+    const { id } = req.params;
+
+    const transaction = await prisma.transaction.findFirst({
+      where: { id, companyId },
     });
-    res.json({ success: true, message: "Transação removida" });
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, error: "Transação não encontrada" });
+    }
+
+    await prisma.transaction.delete({ where: { id } });
+    res.json({ success: true, message: "Transação excluída" });
   } catch (error) {
     next(error);
   }
