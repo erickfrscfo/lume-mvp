@@ -14,15 +14,20 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
     const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1);
 
-    // Transações dos últimos 6 meses
-    const transactions = await prisma.transaction.findMany({
-      where: { companyId, date: { gte: sixMonthsAgo } },
+    // ============================================
+    // SALDO DE CAIXA: usar TODAS as transações (sem filtro de data)
+    // para refletir o saldo real acumulado da empresa
+    // ============================================
+    const allTransactions = await prisma.transaction.findMany({
+      where: { companyId },
     });
 
-    // Totais gerais
-    const totalIncome = transactions.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
-    const totalExpense = transactions.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
+    const totalIncome = allTransactions.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
+    const totalExpense = allTransactions.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
     const cashBalance = totalIncome - totalExpense;
+
+    // Transações dos últimos 6 meses (para burn rate e variação mensal)
+    const transactions = allTransactions.filter((t) => t.date >= sixMonthsAgo);
 
     // ============================================
     // BURN RATE CORRIGIDO
