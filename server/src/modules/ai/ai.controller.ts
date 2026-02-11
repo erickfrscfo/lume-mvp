@@ -21,8 +21,8 @@ router.post("/chat", authMiddleware, async (req: Request, res: Response, next: N
     const userId = (req as any).userId;
     const companyId = (req as any).companyId;
 
-    // Buscar contexto financeiro da empresa
-    const financialContext = await getFinancialContext(companyId);
+    // CORRIGIDO: Usar contexto enriquecido (com evolução mensal, margem, etc.)
+    const financialContext = await getEnrichedFinancialContext(companyId);
 
     const result = await aiService.chat(userId, message, financialContext, history);
     res.json({ success: true, data: result });
@@ -52,6 +52,69 @@ router.post("/explain", authMiddleware, async (req: Request, res: Response, next
   }
 });
 
+// GET /api/ai/suggested-prompts — Perguntas prontas baseadas nos dados da empresa
+router.get("/suggested-prompts", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const companyId = (req as any).companyId;
+
+    // Buscar dados básicos para personalizar as sugestões
+    const now = new Date();
+    const currentMonthName = now.toLocaleString("pt-BR", { month: "long" });
+    const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastMonthName = lastMonthDate.toLocaleString("pt-BR", { month: "long" });
+    const currentYear = now.getFullYear();
+
+    const transactionCount = await prisma.transaction.count({ where: { companyId } });
+
+    const prompts = [
+      {
+        category: "Margem e Lucratividade",
+        questions: [
+          `Qual foi a margem de lucro de ${lastMonthName} de ${currentYear}?`,
+          `Compare a margem de lucro dos últimos 3 meses. Está melhorando ou piorando?`,
+          `Qual mês teve a melhor margem de lucro e por quê?`,
+        ],
+      },
+      {
+        category: "Receitas e Despesas",
+        questions: [
+          `Quais foram as maiores despesas de ${lastMonthName}?`,
+          `Como as receitas evoluíram nos últimos 6 meses?`,
+          `Quais categorias de despesa mais cresceram no último mês?`,
+        ],
+      },
+      {
+        category: "Fluxo de Caixa",
+        questions: [
+          "Qual é a situação atual do meu fluxo de caixa?",
+          "Em quantos meses o caixa vai zerar se continuar nesse ritmo?",
+          `Qual foi o saldo líquido de ${lastMonthName}?`,
+        ],
+      },
+      {
+        category: "Análise Estratégica",
+        questions: [
+          "Quais são os 3 maiores riscos financeiros da empresa agora?",
+          "O que eu deveria cortar primeiro para melhorar o caixa?",
+          "A empresa está crescendo de forma saudável?",
+        ],
+      },
+      {
+        category: "Projeções",
+        questions: [
+          "Se eu aumentar as vendas em 20%, como fica o caixa em 6 meses?",
+          "Qual receita mensal mínima eu preciso para cobrir todas as despesas?",
+          "Qual é o ponto de equilíbrio (break-even) mensal da empresa?",
+        ],
+      },
+    ];
+
+    res.json({ success: true, data: { prompts, transactionCount } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /api/ai/chat/history
 router.get("/chat/history", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -74,80 +137,20 @@ router.get("/chat/history", authMiddleware, async (req: Request, res: Response, 
   }
 });
 
-// Função auxiliar para montar contexto financeiro
-async function getFinancialContext(companyId: string): Promise<string> {
-  const now = new Date();
-  const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1);
-
-  const transactions = await prisma.transaction.findMany({
-    where: {
-      companyId,
-      date: { gte: sixMonthsAgo },
-    },
-    include: { category: true },
-    orderBy: { date: "desc" },
-  });
-
-  if (transactions.length === 0) {
-    return "Nenhuma transação financeira registrada ainda.";
-  }
-
-  const totalIncome = transactions
-    .filter((t) => t.type === "INCOME")
-    .reduce((sum, t) => sum + Number(t.amount), 0);
-
-  const totalExpense = transactions
-    .filter((t) => t.type === "EXPENSE")
-    .reduce((sum, t) => sum + Number(t.amount), 0);
-
-  const balance = totalIncome - totalExpense;
-  const months = 6;
-  const avgMonthlyIncome = totalIncome / months;
-  const avgMonthlyExpense = totalExpense / months;
-  const burnRate = avgMonthlyExpense - avgMonthlyIncome;
-  const runway = burnRate > 0 ? balance / burnRate : Infinity;
-
-  // Agrupar por categoria
-  const byCategory: Record<string, number> = {};
-  transactions.forEach((t) => {
-    const cat = t.category?.name || "Não classificado";
-    byCategory[cat] = (byCategory[cat] || 0) + Number(t.amount);
-  });
-
-  const categoryBreakdown = Object.entries(byCategory)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([name, total]) => `  - ${name}: R$ ${total.toLocaleString("pt-BR")}`)
-    .join("\n");
-
-  return `RESUMO FINANCEIRO (últimos 6 meses):
-- Total de Receitas: R$ ${totalIncome.toLocaleString("pt-BR")}
-- Total de Despesas: R$ ${totalExpense.toLocaleString("pt-BR")}
-- Saldo: R$ ${balance.toLocaleString("pt-BR")}
-- Receita Média Mensal: R$ ${avgMonthlyIncome.toLocaleString("pt-BR")}
-- Despesa Média Mensal: R$ ${avgMonthlyExpense.toLocaleString("pt-BR")}
-- Taxa de Queima: R$ ${burnRate > 0 ? burnRate.toLocaleString("pt-BR") : "0"}/mês
-- Runway Estimado: ${runway === Infinity ? "Indefinido (caixa positivo)" : `${runway.toFixed(1)} meses`}
-- Total de Transações: ${transactions.length}
-
-MAIORES CATEGORIAS:
-${categoryBreakdown}`;
-}
-
 // ============================================
-// CONTEXTO FINANCEIRO ENRIQUECIDO (para "Explica pra Mim")
-// Inclui: dados da empresa, DRE mês a mês, evolução, comparação mês anterior,
-// categorias detalhadas, cenários ativos, e contexto extra do frontend
+// CONTEXTO FINANCEIRO ENRIQUECIDO
+// Usado tanto pelo Chat quanto pelo Explica pra Mim
+// Inclui: dados da empresa, DRE mês a mês, evolução, comparação,
+// categorias detalhadas, cenários ativos, margem de lucro por mês
 // ============================================
 async function getEnrichedFinancialContext(companyId: string, extraContext?: string): Promise<string> {
   const now = new Date();
-  const sevenMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 7, 1);
-  const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
   const company = await prisma.company.findUnique({ where: { id: companyId } });
 
-  const transactions = await prisma.transaction.findMany({
-    where: { companyId, date: { gte: sevenMonthsAgo } },
+  // CORRIGIDO: Buscar TODAS as transações da empresa (não apenas 6-7 meses)
+  const allTransactions = await prisma.transaction.findMany({
+    where: { companyId },
     include: { category: true },
     orderBy: { date: "asc" },
   });
@@ -156,13 +159,13 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     where: { companyId, isActive: true },
   });
 
-  if (transactions.length === 0) {
+  if (allTransactions.length === 0) {
     return "Nenhuma transação financeira registrada ainda.";
   }
 
-  // Agrupamento mês a mês
+  // Agrupamento mês a mês (TODAS as transações)
   const monthlyData: Record<string, { income: number; expense: number; byCategory: Record<string, number> }> = {};
-  transactions.forEach((t) => {
+  allTransactions.forEach((t) => {
     const mk = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
     if (!monthlyData[mk]) monthlyData[mk] = { income: 0, expense: 0, byCategory: {} };
     const amt = Number(t.amount);
@@ -172,8 +175,8 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     monthlyData[mk].byCategory[catName] = (monthlyData[mk].byCategory[catName] || 0) + amt;
   });
 
-  const totalIncome = transactions.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
-  const totalExpense = transactions.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
+  const totalIncome = allTransactions.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
+  const totalExpense = allTransactions.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
   const balance = totalIncome - totalExpense;
   const monthCount = Object.keys(monthlyData).length || 1;
   const avgMonthlyIncome = totalIncome / monthCount;
@@ -182,6 +185,7 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
   const runway = burnRate > 0 ? balance / burnRate : Infinity;
 
   const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const lastMonthKey = `${lastMonthStart.getFullYear()}-${String(lastMonthStart.getMonth() + 1).padStart(2, "0")}`;
   const currentMonth = monthlyData[currentMonthKey] || { income: 0, expense: 0, byCategory: {} };
   const lastMonth = monthlyData[lastMonthKey] || { income: 0, expense: 0, byCategory: {} };
@@ -194,7 +198,7 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
 
   // Categorias detalhadas
   const allCategories: Record<string, { total: number; type: string }> = {};
-  transactions.forEach((t) => {
+  allTransactions.forEach((t) => {
     const catName = t.category?.name || "Não classificado";
     if (!allCategories[catName]) allCategories[catName] = { total: 0, type: t.type };
     allCategories[catName].total += Number(t.amount);
@@ -205,11 +209,13 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     .map(([name, data]) => `  - ${name} (${data.type === "INCOME" ? "Receita" : "Despesa"}): R$ ${data.total.toLocaleString("pt-BR")}`)
     .join("\n");
 
-  // Evolução mensal
+  // Evolução mensal COM MARGEM DE LUCRO
   const monthKeys = Object.keys(monthlyData).sort();
   const monthlyEvolution = monthKeys.map((mk) => {
     const d = monthlyData[mk];
-    return `  ${mk}: Receita R$ ${d.income.toLocaleString("pt-BR")} | Despesa R$ ${d.expense.toLocaleString("pt-BR")} | Líquido R$ ${(d.income - d.expense).toLocaleString("pt-BR")}`;
+    const net = d.income - d.expense;
+    const margin = d.income > 0 ? ((net / d.income) * 100).toFixed(1) : "0.0";
+    return `  ${mk}: Receita R$ ${d.income.toLocaleString("pt-BR")} | Despesa R$ ${d.expense.toLocaleString("pt-BR")} | Líquido R$ ${net.toLocaleString("pt-BR")} | Margem: ${margin}%`;
   }).join("\n");
 
   // Maiores variações
@@ -239,7 +245,39 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
       }).join("\n")
     : "  Nenhum cenário ativo.";
 
-  let context = `=== DADOS DA EMPRESA ===\nNome: ${company?.name || "Não informado"}\nCNPJ: ${company?.cnpj || "Não informado"}\nSetor: ${company?.sector || "Não informado"}\n\n=== RESUMO FINANCEIRO (últimos ${monthCount} meses) ===\n- Total de Receitas: R$ ${totalIncome.toLocaleString("pt-BR")}\n- Total de Despesas: R$ ${totalExpense.toLocaleString("pt-BR")}\n- Saldo Acumulado: R$ ${balance.toLocaleString("pt-BR")}\n- Receita Média Mensal: R$ ${avgMonthlyIncome.toLocaleString("pt-BR")}\n- Despesa Média Mensal: R$ ${avgMonthlyExpense.toLocaleString("pt-BR")}\n- Taxa de Queima (Burn Rate): R$ ${burnRate > 0 ? burnRate.toLocaleString("pt-BR") : "0"}/mês\n- Runway Estimado: ${runway === Infinity ? "Indefinido (caixa positivo)" : `${runway.toFixed(1)} meses`}\n- Total de Transações: ${transactions.length}\n\n=== MÊS ATUAL (${currentMonthKey}) vs MÊS ANTERIOR (${lastMonthKey}) ===\n- Receita Atual: R$ ${currentMonth.income.toLocaleString("pt-BR")} | Anterior: R$ ${lastMonth.income.toLocaleString("pt-BR")}\n- Despesa Atual: R$ ${currentMonth.expense.toLocaleString("pt-BR")} | Anterior: R$ ${lastMonth.expense.toLocaleString("pt-BR")}\n- Lucro Bruto Atual: R$ ${currentGrossProfit.toLocaleString("pt-BR")} | Anterior: R$ ${lastGrossProfit.toLocaleString("pt-BR")}\n- Variação do Lucro Bruto: ${grossProfitChange > 0 ? "+" : ""}${grossProfitChange.toFixed(1)}%\n- Margem Atual: ${currentMargin.toFixed(1)}% | Margem Anterior: ${lastMargin.toFixed(1)}%\n\n=== EVOLUÇÃO MENSAL ===\n${monthlyEvolution}\n\n=== MAIORES VARIAÇÕES (mês atual vs anterior, >10%) ===\n${biggestChanges || "  Sem variações significativas."}\n\n=== TOP CATEGORIAS (acumulado) ===\n${topCategories}\n\n=== CENÁRIOS FINANCEIROS ATIVOS ===\n${scenarioText}`;
+  let context = `=== DADOS DA EMPRESA ===
+Nome: ${company?.name || "Não informado"}
+CNPJ: ${company?.cnpj || "Não informado"}
+Setor: ${company?.sector || "Não informado"}
+
+=== RESUMO FINANCEIRO (todos os ${monthCount} meses com dados) ===
+- Total de Receitas: R$ ${totalIncome.toLocaleString("pt-BR")}
+- Total de Despesas: R$ ${totalExpense.toLocaleString("pt-BR")}
+- Saldo Acumulado: R$ ${balance.toLocaleString("pt-BR")}
+- Receita Média Mensal: R$ ${avgMonthlyIncome.toLocaleString("pt-BR")}
+- Despesa Média Mensal: R$ ${avgMonthlyExpense.toLocaleString("pt-BR")}
+- Taxa de Queima (Burn Rate): R$ ${burnRate > 0 ? burnRate.toLocaleString("pt-BR") : "0"}/mês
+- Runway Estimado: ${runway === Infinity ? "Indefinido (caixa positivo)" : `${runway.toFixed(1)} meses`}
+- Total de Transações: ${allTransactions.length}
+
+=== MÊS ATUAL (${currentMonthKey}) vs MÊS ANTERIOR (${lastMonthKey}) ===
+- Receita Atual: R$ ${currentMonth.income.toLocaleString("pt-BR")} | Anterior: R$ ${lastMonth.income.toLocaleString("pt-BR")}
+- Despesa Atual: R$ ${currentMonth.expense.toLocaleString("pt-BR")} | Anterior: R$ ${lastMonth.expense.toLocaleString("pt-BR")}
+- Lucro Bruto Atual: R$ ${currentGrossProfit.toLocaleString("pt-BR")} | Anterior: R$ ${lastGrossProfit.toLocaleString("pt-BR")}
+- Variação do Lucro Bruto: ${grossProfitChange > 0 ? "+" : ""}${grossProfitChange.toFixed(1)}%
+- Margem Atual: ${currentMargin.toFixed(1)}% | Margem Anterior: ${lastMargin.toFixed(1)}%
+
+=== EVOLUÇÃO MENSAL DETALHADA (com margem de lucro) ===
+${monthlyEvolution}
+
+=== MAIORES VARIAÇÕES (mês atual vs anterior, >10%) ===
+${biggestChanges || "  Sem variações significativas."}
+
+=== TOP CATEGORIAS (acumulado) ===
+${topCategories}
+
+=== CENÁRIOS FINANCEIROS ATIVOS ===
+${scenarioText}`;
 
   if (extraContext) {
     context += `\n\n=== CONTEXTO ADICIONAL (dados da tela) ===\n${extraContext}`;
