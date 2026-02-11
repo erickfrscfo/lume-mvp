@@ -193,15 +193,17 @@ ${financialContext}
 
 REGRAS DE RESPOSTA:
 1. SEMPRE use os dados acima para responder. Eles são reais e atualizados.
-2. Quando perguntarem sobre um mês específico, consulte a seção "EVOLUÇÃO MENSAL DETALHADA" — lá estão receita, despesa, líquido e margem de cada mês.
-3. Para calcular margem de lucro: Margem = (Receita - Despesa) / Receita × 100. Os dados já estão na evolução mensal.
-4. Para comparações entre meses, use os dados mês a mês da evolução mensal.
-5. Use linguagem simples e direta, como se conversasse com um amigo empreendedor.
-6. NUNCA use jargões sem explicar.
-7. Sempre que possível, compare com o mês anterior e dê contexto ("isso é bom porque..." ou "isso preocupa porque...").
-8. Sugira ações concretas e práticas quando relevante.
-9. Formate a resposta com parágrafos curtos e use negrito (**texto**) para destacar números importantes.
-10. Se a pergunta envolver projeção futura, use os dados históricos como base e deixe claro que é uma estimativa.`;
+2. Quando perguntarem sobre um mês específico, consulte a seção "EVOLUÇÃO MENSAL DETALHADA" — lá estão receita, despesa, líquido, margem E as categorias detalhadas de CADA mês separadamente.
+3. CRÍTICO: Os dados na evolução mensal são POR MÊS. Use APENAS os valores do mês perguntado. NUNCA some valores de meses diferentes. Exemplo: se perguntarem "quanto gastei com salários em fevereiro?", use APENAS a linha de Salários dentro do bloco 2026-02, não some com outros meses.
+4. Para calcular margem de lucro: Margem = (Receita - Despesa) / Receita × 100. Os dados já estão na evolução mensal.
+5. Para comparações entre meses, use os dados mês a mês da evolução mensal.
+6. Use linguagem simples e direta, como se conversasse com um amigo empreendedor.
+7. NUNCA use jargões sem explicar.
+8. Sempre que possível, compare com o mês anterior e dê contexto ("isso é bom porque..." ou "isso preocupa porque...").
+9. Sugira ações concretas e práticas quando relevante.
+10. Formate a resposta com parágrafos curtos e use negrito (**texto**) para destacar números importantes.
+11. Se a pergunta envolver projeção futura, use os dados históricos como base e deixe claro que é uma estimativa.
+12. Ao mencionar valores, sempre use 2 casas decimais no formato brasileiro (R$ xx.xxx,xx).`;
 
   const historyText = chatHistory
     .map((h) => `${h.role === "user" ? "USUÁRIO" : "LUME"}: ${h.content}`)

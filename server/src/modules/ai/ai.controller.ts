@@ -21,7 +21,6 @@ router.post("/chat", authMiddleware, async (req: Request, res: Response, next: N
     const userId = (req as any).userId;
     const companyId = (req as any).companyId;
 
-    // CORRIGIDO: Usar contexto enriquecido (com evolução mensal, margem, etc.)
     const financialContext = await getEnrichedFinancialContext(companyId);
 
     const result = await aiService.chat(userId, message, financialContext, history);
@@ -57,7 +56,6 @@ router.get("/suggested-prompts", authMiddleware, async (req: Request, res: Respo
   try {
     const companyId = (req as any).companyId;
 
-    // Buscar dados básicos para personalizar as sugestões
     const now = new Date();
     const currentMonthName = now.toLocaleString("pt-BR", { month: "long" });
     const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -139,16 +137,15 @@ router.get("/chat/history", authMiddleware, async (req: Request, res: Response, 
 
 // ============================================
 // CONTEXTO FINANCEIRO ENRIQUECIDO
-// Usado tanto pelo Chat quanto pelo Explica pra Mim
-// Inclui: dados da empresa, DRE mês a mês, evolução, comparação,
-// categorias detalhadas, cenários ativos, margem de lucro por mês
+// Agora inclui: despesas por categoria POR MÊS (não apenas acumulado)
+// para que a IA consiga responder perguntas sobre meses específicos
 // ============================================
 async function getEnrichedFinancialContext(companyId: string, extraContext?: string): Promise<string> {
   const now = new Date();
 
   const company = await prisma.company.findUnique({ where: { id: companyId } });
 
-  // CORRIGIDO: Buscar TODAS as transações da empresa (não apenas 6-7 meses)
+  // Buscar TODAS as transações da empresa
   const allTransactions = await prisma.transaction.findMany({
     where: { companyId },
     include: { category: true },
@@ -163,16 +160,29 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     return "Nenhuma transação financeira registrada ainda.";
   }
 
-  // Agrupamento mês a mês (TODAS as transações)
-  const monthlyData: Record<string, { income: number; expense: number; byCategory: Record<string, number> }> = {};
+  // Agrupamento mês a mês com categorias detalhadas POR MÊS
+  const monthlyData: Record<string, {
+    income: number;
+    expense: number;
+    incomeByCategory: Record<string, number>;
+    expenseByCategory: Record<string, number>;
+  }> = {};
+
   allTransactions.forEach((t) => {
     const mk = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
-    if (!monthlyData[mk]) monthlyData[mk] = { income: 0, expense: 0, byCategory: {} };
+    if (!monthlyData[mk]) {
+      monthlyData[mk] = { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {} };
+    }
     const amt = Number(t.amount);
-    if (t.type === "INCOME") monthlyData[mk].income += amt;
-    else monthlyData[mk].expense += amt;
     const catName = t.category?.name || "Não classificado";
-    monthlyData[mk].byCategory[catName] = (monthlyData[mk].byCategory[catName] || 0) + amt;
+
+    if (t.type === "INCOME") {
+      monthlyData[mk].income += amt;
+      monthlyData[mk].incomeByCategory[catName] = (monthlyData[mk].incomeByCategory[catName] || 0) + amt;
+    } else {
+      monthlyData[mk].expense += amt;
+      monthlyData[mk].expenseByCategory[catName] = (monthlyData[mk].expenseByCategory[catName] || 0) + amt;
+    }
   });
 
   const totalIncome = allTransactions.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
@@ -187,8 +197,8 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
   const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const lastMonthKey = `${lastMonthStart.getFullYear()}-${String(lastMonthStart.getMonth() + 1).padStart(2, "0")}`;
-  const currentMonth = monthlyData[currentMonthKey] || { income: 0, expense: 0, byCategory: {} };
-  const lastMonth = monthlyData[lastMonthKey] || { income: 0, expense: 0, byCategory: {} };
+  const currentMonth = monthlyData[currentMonthKey] || { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {} };
+  const lastMonth = monthlyData[lastMonthKey] || { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {} };
 
   const currentGrossProfit = currentMonth.income - currentMonth.expense;
   const lastGrossProfit = lastMonth.income - lastMonth.expense;
@@ -196,44 +206,69 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
   const currentMargin = currentMonth.income > 0 ? (currentGrossProfit / currentMonth.income * 100) : 0;
   const lastMargin = lastMonth.income > 0 ? (lastGrossProfit / lastMonth.income * 100) : 0;
 
-  // Categorias detalhadas
-  const allCategories: Record<string, { total: number; type: string }> = {};
-  allTransactions.forEach((t) => {
-    const catName = t.category?.name || "Não classificado";
-    if (!allCategories[catName]) allCategories[catName] = { total: 0, type: t.type };
-    allCategories[catName].total += Number(t.amount);
-  });
-  const topCategories = Object.entries(allCategories)
-    .sort((a, b) => b[1].total - a[1].total)
-    .slice(0, 15)
-    .map(([name, data]) => `  - ${name} (${data.type === "INCOME" ? "Receita" : "Despesa"}): R$ ${data.total.toLocaleString("pt-BR")}`)
-    .join("\n");
-
-  // Evolução mensal COM MARGEM DE LUCRO
+  // Evolução mensal COM MARGEM DE LUCRO E CATEGORIAS DETALHADAS
   const monthKeys = Object.keys(monthlyData).sort();
+
   const monthlyEvolution = monthKeys.map((mk) => {
     const d = monthlyData[mk];
     const net = d.income - d.expense;
     const margin = d.income > 0 ? ((net / d.income) * 100).toFixed(1) : "0.0";
-    return `  ${mk}: Receita R$ ${d.income.toLocaleString("pt-BR")} | Despesa R$ ${d.expense.toLocaleString("pt-BR")} | Líquido R$ ${net.toLocaleString("pt-BR")} | Margem: ${margin}%`;
-  }).join("\n");
 
-  // Maiores variações
+    // Top 5 despesas do mês
+    const topExpenses = Object.entries(d.expenseByCategory)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, val]) => `      - ${name}: R$ ${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+      .join("\n");
+
+    // Top 5 receitas do mês
+    const topIncomes = Object.entries(d.incomeByCategory)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, val]) => `      - ${name}: R$ ${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+      .join("\n");
+
+    let detail = `  ${mk}:`;
+    detail += `\n    Receita Total: R$ ${d.income.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    detail += `\n    Despesa Total: R$ ${d.expense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    detail += `\n    Líquido: R$ ${net.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    detail += `\n    Margem de Lucro: ${margin}%`;
+    if (topIncomes) {
+      detail += `\n    Receitas por categoria:`;
+      detail += `\n${topIncomes}`;
+    }
+    if (topExpenses) {
+      detail += `\n    Despesas por categoria:`;
+      detail += `\n${topExpenses}`;
+    }
+    return detail;
+  }).join("\n\n");
+
+  // Maiores variações mês atual vs anterior
   let biggestChanges = "";
   if (currentMonth && lastMonth) {
-    const changes: { name: string; change: number; pct: number }[] = [];
-    const allCatNames = new Set([...Object.keys(currentMonth.byCategory), ...Object.keys(lastMonth.byCategory)]);
-    allCatNames.forEach((name) => {
-      const curr = currentMonth.byCategory[name] || 0;
-      const prev = lastMonth.byCategory[name] || 0;
+    const changes: { name: string; change: number; pct: number; type: string }[] = [];
+    const allExpCats = new Set([...Object.keys(currentMonth.expenseByCategory), ...Object.keys(lastMonth.expenseByCategory)]);
+    allExpCats.forEach((name) => {
+      const curr = currentMonth.expenseByCategory[name] || 0;
+      const prev = lastMonth.expenseByCategory[name] || 0;
       if (prev > 0) {
         const pct = ((curr - prev) / prev) * 100;
-        if (Math.abs(pct) > 10) changes.push({ name, change: curr - prev, pct });
+        if (Math.abs(pct) > 10) changes.push({ name, change: curr - prev, pct, type: "Despesa" });
+      }
+    });
+    const allIncCats = new Set([...Object.keys(currentMonth.incomeByCategory), ...Object.keys(lastMonth.incomeByCategory)]);
+    allIncCats.forEach((name) => {
+      const curr = currentMonth.incomeByCategory[name] || 0;
+      const prev = lastMonth.incomeByCategory[name] || 0;
+      if (prev > 0) {
+        const pct = ((curr - prev) / prev) * 100;
+        if (Math.abs(pct) > 10) changes.push({ name, change: curr - prev, pct, type: "Receita" });
       }
     });
     changes.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
-    biggestChanges = changes.slice(0, 5).map((c) =>
-      `  - ${c.name}: ${c.pct > 0 ? "+" : ""}${c.pct.toFixed(1)}% (${c.change > 0 ? "+" : ""}R$ ${c.change.toLocaleString("pt-BR")})`
+    biggestChanges = changes.slice(0, 8).map((c) =>
+      `  - ${c.name} (${c.type}): ${c.pct > 0 ? "+" : ""}${c.pct.toFixed(1)}% (${c.change > 0 ? "+" : ""}R$ ${c.change.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`
     ).join("\n");
   }
 
@@ -251,30 +286,29 @@ CNPJ: ${company?.cnpj || "Não informado"}
 Setor: ${company?.sector || "Não informado"}
 
 === RESUMO FINANCEIRO (todos os ${monthCount} meses com dados) ===
-- Total de Receitas: R$ ${totalIncome.toLocaleString("pt-BR")}
-- Total de Despesas: R$ ${totalExpense.toLocaleString("pt-BR")}
-- Saldo Acumulado: R$ ${balance.toLocaleString("pt-BR")}
-- Receita Média Mensal: R$ ${avgMonthlyIncome.toLocaleString("pt-BR")}
-- Despesa Média Mensal: R$ ${avgMonthlyExpense.toLocaleString("pt-BR")}
-- Taxa de Queima (Burn Rate): R$ ${burnRate > 0 ? burnRate.toLocaleString("pt-BR") : "0"}/mês
+- Total de Receitas: R$ ${totalIncome.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Total de Despesas: R$ ${totalExpense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Saldo Acumulado: R$ ${balance.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Receita Média Mensal: R$ ${avgMonthlyIncome.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Despesa Média Mensal: R$ ${avgMonthlyExpense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Taxa de Queima (Burn Rate): R$ ${burnRate > 0 ? burnRate.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0,00"}/mês
 - Runway Estimado: ${runway === Infinity ? "Indefinido (caixa positivo)" : `${runway.toFixed(1)} meses`}
 - Total de Transações: ${allTransactions.length}
 
 === MÊS ATUAL (${currentMonthKey}) vs MÊS ANTERIOR (${lastMonthKey}) ===
-- Receita Atual: R$ ${currentMonth.income.toLocaleString("pt-BR")} | Anterior: R$ ${lastMonth.income.toLocaleString("pt-BR")}
-- Despesa Atual: R$ ${currentMonth.expense.toLocaleString("pt-BR")} | Anterior: R$ ${lastMonth.expense.toLocaleString("pt-BR")}
-- Lucro Bruto Atual: R$ ${currentGrossProfit.toLocaleString("pt-BR")} | Anterior: R$ ${lastGrossProfit.toLocaleString("pt-BR")}
+- Receita Atual: R$ ${currentMonth.income.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastMonth.income.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Despesa Atual: R$ ${currentMonth.expense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastMonth.expense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Lucro Bruto Atual: R$ ${currentGrossProfit.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastGrossProfit.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Variação do Lucro Bruto: ${grossProfitChange > 0 ? "+" : ""}${grossProfitChange.toFixed(1)}%
 - Margem Atual: ${currentMargin.toFixed(1)}% | Margem Anterior: ${lastMargin.toFixed(1)}%
 
-=== EVOLUÇÃO MENSAL DETALHADA (com margem de lucro) ===
+=== EVOLUÇÃO MENSAL DETALHADA (com categorias por mês) ===
+IMPORTANTE: Os valores abaixo são POR MÊS. Quando o usuário perguntar sobre um mês específico, use APENAS os dados daquele mês. NÃO some valores de meses diferentes.
+
 ${monthlyEvolution}
 
-=== MAIORES VARIAÇÕES (mês atual vs anterior, >10%) ===
+=== MAIORES VARIAÇÕES (${currentMonthKey} vs ${lastMonthKey}, >10%) ===
 ${biggestChanges || "  Sem variações significativas."}
-
-=== TOP CATEGORIAS (acumulado) ===
-${topCategories}
 
 === CENÁRIOS FINANCEIROS ATIVOS ===
 ${scenarioText}`;
