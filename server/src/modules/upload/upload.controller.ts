@@ -209,7 +209,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
     }
 
     // ============================================
-    // NOVA FUNCIONALIDADE: CLASSIFICAÇÃO DE TIPO DE CUSTO (IA)
+    // CLASSIFICAÇÃO DE TIPO DE CUSTO (IA) - em lotes de 20
     // Classifica despesas como fixo ou variável automaticamente
     // ============================================
     const unclassifiedExpenses = await prisma.transaction.findMany({
@@ -222,37 +222,39 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
     });
 
     if (unclassifiedExpenses.length > 0) {
-      // Preparar dados para classificação de tipo de custo
-      const expensesForCostClassification = unclassifiedExpenses.map((t) => ({
-        id: t.id,
-        description: t.description,
-        amount: Number(t.amount),
-        categoryName: t.category?.name,
-      }));
+      const costBatchSize = 20;
+      for (let i = 0; i < unclassifiedExpenses.length; i += costBatchSize) {
+        const batch = unclassifiedExpenses.slice(i, i + costBatchSize).map((t) => ({
+          id: t.id,
+          description: t.description,
+          amount: Number(t.amount),
+          categoryName: t.category?.name,
+        }));
 
-      try {
-        const costClassifications = await aiService.classifyCostType(
-          userId,
-          expensesForCostClassification
-        );
+        try {
+          const costClassifications = await aiService.classifyCostType(
+            userId,
+            batch
+          );
 
-        // Atualizar transações com tipo de custo
-        for (const costClass of costClassifications) {
-          try {
-            await prisma.transaction.update({
-              where: { id: costClass.id },
-              data: {
-                tipo_custo: costClass.costType,
-                costConfidence: costClass.confidence,
-              },
-            });
-          } catch (updateError) {
-            console.error(`Erro ao atualizar tipo de custo da transação ${costClass.id}:`, updateError);
+          // Atualizar transações com tipo de custo
+          for (const costClass of costClassifications) {
+            try {
+              await prisma.transaction.update({
+                where: { id: costClass.id },
+                data: {
+                  tipo_custo: costClass.costType,
+                  costConfidence: costClass.confidence,
+                },
+              });
+            } catch (updateError) {
+              console.error(`Erro ao atualizar tipo de custo da transação ${costClass.id}:`, updateError);
+            }
           }
+        } catch (costClassError) {
+          console.error(`Erro na classificação de tipo de custo (lote ${Math.floor(i / costBatchSize) + 1}):`, costClassError);
+          // Não bloqueia o upload se um lote falhar, continua com o próximo
         }
-      } catch (costClassError) {
-        console.error("Erro na classificação de tipo de custo (IA):", costClassError);
-        // Não bloqueia o upload se a classificação de custo falhar
       }
     }
 
