@@ -13,6 +13,7 @@ import aiController from "./modules/ai/ai.controller.js";
 import uploadController from "./modules/upload/upload.controller.js";
 import scenariosController from "./modules/scenarios/scenarios.controller.js";
 import alertsController from "./modules/alerts/alerts.controller.js";
+import forecastController from "./modules/forecast/forecast.controller.js";
 
 const app = express();
 
@@ -43,6 +44,7 @@ app.use("/api/ai", aiController);
 app.use("/api/upload", uploadController);
 app.use("/api/scenarios", scenariosController);
 app.use("/api/alerts", alertsController);
+app.use("/api/forecast", forecastController);
 
 // Health check
 app.get("/api/health", (_req, res) => {
