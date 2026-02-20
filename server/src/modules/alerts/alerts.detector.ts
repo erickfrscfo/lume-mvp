@@ -1,321 +1,301 @@
-import {
-  Alert,
-  AlertRule,
-  Company,
-  Prisma,
-  Transaction,
-  TransactionType,
-} from '@prisma/client';
-import { Decimal } from '@prisma/client/runtime/library';
-import { addMonths, endOfMonth, startOfMonth } from 'date-fns';
-import { prisma } from '../../prisma';
+/**
+ * CAMADA 1 — DETECÇÃO DE ALERTAS (sem IA)
+ * 
+ * Analisa transações e métricas financeiras para identificar padrões
+ * que merecem atenção do CFO. Retorna alertas brutos (sem texto humanizado).
+ */
 
-type TransactionWithCategory = Transaction & {
-  category: {
-    name: string;
-    group: string;
-  } | null;
-};
+import { Prisma, TransactionType } from '@prisma/client';
+import { prisma } from '../../shared/database.js';
 
-export class AlertsDetector {
-  /**
-   * Detecta transações duplicadas para uma empresa em um determinado período.
-   */
-  async detectDuplicateTransactions(
-    companyId: string,
-    startDate: Date,
-    endDate: Date,
-  ): Promise<Partial<Alert>[]> {
-    const potentialDuplicates = await prisma.transaction.groupBy({
-      by: ['description', 'amount', 'date', 'tipo_transacao'],
+// ============================================
+// TIPOS
+// ============================================
+
+export interface RawAlert {
+  type: string;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  title: string;
+  category?: string;
+  potentialSavings?: number;
+  data: Record<string, any>;
+}
+
+// ============================================
+// HELPERS
+// ============================================
+
+function formatMonth(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function getMonthStart(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function getMonthEnd(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+}
+
+function addMonths(date: Date, months: number): Date {
+  const result = new Date(date);
+  result.setMonth(result.getMonth() + months);
+  return result;
+}
+
+// ============================================
+// DETECTORES
+// ============================================
+
+/**
+ * Detecta picos de despesa em categorias específicas
+ */
+async function detectExpenseSpikes(companyId: string): Promise<RawAlert[]> {
+  const alerts: RawAlert[] = [];
+  const currentMonth = new Date();
+  const currentMonthKey = formatMonth(currentMonth);
+
+  // Buscar todas as categorias de despesa
+  const categories = await prisma.category.findMany({
+    where: { type: TransactionType.EXPENSE },
+    select: { id: true, name: true },
+  });
+
+  for (const category of categories) {
+    // Despesas do mês atual
+    const currentExpenses = await prisma.transaction.aggregate({
+      _sum: { amount: true },
       where: {
         companyId,
+        categoryId: category.id,
+        tipo_transacao: TransactionType.EXPENSE,
         date: {
-          gte: startDate,
-          lte: endDate,
-        },
-      },
-      _count: {
-        id: true,
-      },
-      having: {
-        id: {
-          _count: {
-            gt: 1,
-          },
+          gte: getMonthStart(currentMonth),
+          lte: getMonthEnd(currentMonth),
         },
       },
     });
 
-    const alerts: Partial<Alert>[] = [];
-    for (const group of potentialDuplicates) {
-      const transactions = await prisma.transaction.findMany({
-        where: {
-          companyId,
-          description: group.description,
-          amount: group.amount,
-          date: group.date,
-          tipo_transacao: group.tipo_transacao, // CORREÇÃO: Usar 'tipo_transacao'
+    const currentValue = Math.abs(currentExpenses._sum.amount?.toNumber() || 0);
+    if (currentValue === 0) continue;
+
+    // Média dos últimos 3 meses (excluindo o atual)
+    const historicalExpenses = await prisma.transaction.aggregate({
+      _sum: { amount: true },
+      where: {
+        companyId,
+        categoryId: category.id,
+        tipo_transacao: TransactionType.EXPENSE,
+        date: {
+          gte: getMonthStart(addMonths(currentMonth, -3)),
+          lt: getMonthStart(currentMonth),
         },
-        include: {
-          category: {
-            select: {
-              name: true,
-              group: true,
-            },
-          },
+      },
+    });
+
+    const average = Math.abs(historicalExpenses._sum.amount?.toNumber() || 0) / 3;
+    if (average === 0) continue;
+
+    const variation = ((currentValue - average) / average) * 100;
+
+    // Alerta se variação > 20%
+    if (variation > 20) {
+      alerts.push({
+        type: 'EXPENSE_SPIKE',
+        severity: variation > 50 ? 'HIGH' : 'MEDIUM',
+        title: `Aumento de ${variation.toFixed(0)}% em ${category.name}`,
+        category: 'Despesas',
+        data: {
+          category: category.name,
+          currentMonth: currentMonthKey,
+          currentValue,
+          average,
+          variation: Math.round(variation),
         },
       });
+    }
 
-      const description = `Transação duplicada detectada: "${
-        group.description
-      }" no valor de ${group.amount.toFixed(
-        2,
-      )} em ${group.date.toLocaleDateString()}.`;
-
-      const alert: Partial<Alert> = {
-        companyId,
-        type: 'DUPLICATE_TRANSACTION',
-        description,
-        severity: 'warning',
-        status: 'new',
-        relatedTransactionIds: transactions.map((t) => t.id),
-        metadata: {
-          transactions: transactions.map((t: TransactionWithCategory) => ({
-            id: t.id,
-            description: t.description,
-            amount: t.amount,
-            date: t.date,
-            // CORREÇÃO: Acessar 'categoryId' e 'category.name'
-            category: t.categoryId
-              ? `${t.category?.group} > ${t.category?.name}`
-              : 'Não categorizado',
-          })),
+    // Alerta de economia se variação < -20%
+    if (variation < -20) {
+      const savings = average - currentValue;
+      alerts.push({
+        type: 'EXPENSE_DROP',
+        severity: 'LOW',
+        title: `Economia de ${Math.abs(variation).toFixed(0)}% em ${category.name}`,
+        category: 'Economia',
+        potentialSavings: savings,
+        data: {
+          category: category.name,
+          currentMonth: currentMonthKey,
+          currentValue,
+          average,
+          variation: Math.round(variation),
+          savings,
         },
+      });
+    }
+  }
+
+  return alerts;
+}
+
+/**
+ * Detecta oportunidades de negociação com fornecedores recorrentes
+ */
+async function detectNegotiationOpportunities(companyId: string): Promise<RawAlert[]> {
+  const alerts: RawAlert[] = [];
+  const sixMonthsAgo = addMonths(new Date(), -6);
+
+  // Buscar fornecedores com pagamentos recorrentes
+  const suppliers = await prisma.transaction.groupBy({
+    by: ['description'],
+    where: {
+      companyId,
+      tipo_transacao: TransactionType.EXPENSE,
+      date: { gte: sixMonthsAgo },
+    },
+    _count: { id: true },
+    _sum: { amount: true },
+    having: {
+      id: { _count: { gte: 4 } }, // Pelo menos 4 pagamentos em 6 meses
+    },
+  });
+
+  for (const supplier of suppliers) {
+    const totalValue = Math.abs(supplier._sum.amount?.toNumber() || 0);
+    const avgMonthlyValue = totalValue / 6;
+
+    // Oportunidade de negociação se valor médio > R$ 1.000/mês
+    if (avgMonthlyValue > 1000) {
+      const estimatedDiscount = {
+        min: totalValue * 0.05, // 5% de desconto
+        max: totalValue * 0.15, // 15% de desconto
       };
-      alerts.push(alert);
-    }
-    return alerts;
-  }
 
-  /**
-   * Detecta transações de alto valor baseadas nas regras da empresa.
-   */
-  async detectHighValueTransactions(
-    company: Company,
-    startDate: Date,
-    endDate: Date,
-  ): Promise<Partial<Alert>[]> {
-    const rules = await prisma.alertRule.findMany({
-      where: {
-        companyId: company.id,
-        type: 'HIGH_VALUE_TRANSACTION',
-        isActive: true,
-      },
-    });
-
-    if (rules.length === 0) return [];
-
-    const alerts: Partial<Alert>[] = [];
-    for (const rule of rules) {
-      const threshold = (rule.configuration as Prisma.JsonObject)
-        ?.threshold as number;
-      if (!threshold) continue;
-
-      const transactions = await prisma.transaction.findMany({
-        where: {
-          companyId: company.id,
-          date: { gte: startDate, lte: endDate },
-          amount: { gte: threshold },
-          // CORREÇÃO: Usar 'tipo_transacao'
-          tipo_transacao:
-            (rule.configuration as Prisma.JsonObject)?.transactionType === 'revenue'
-              ? TransactionType.RECEITA
-              : TransactionType.DESPESA,
-        },
-        include: {
-          category: {
-            select: {
-              name: true,
-              group: true,
-            },
-          },
+      alerts.push({
+        type: 'NEGOTIATION_OPPORTUNITY',
+        severity: 'MEDIUM',
+        title: `Oportunidade de negociação com ${supplier.description}`,
+        category: 'Negociação',
+        potentialSavings: estimatedDiscount.min,
+        data: {
+          supplier: supplier.description,
+          monthsConsecutive: supplier._count.id,
+          avgMonthlyValue,
+          estimatedDiscount,
+          discountRange: '5-15%',
         },
       });
-
-      for (const transaction of transactions) {
-        const description = `Transação de alto valor detectada: ${
-          transaction.description
-        } (${transaction.amount.toFixed(2)}) excede o limite de ${threshold}.`;
-        alerts.push({
-          companyId: company.id,
-          type: 'HIGH_VALUE_TRANSACTION',
-          description,
-          severity: 'warning',
-          status: 'new',
-          relatedTransactionIds: [transaction.id],
-          metadata: {
-            transactionId: transaction.id,
-            amount: transaction.amount,
-            threshold,
-            // CORREÇÃO: Acessar 'category.name'
-            category: transaction.category?.name || 'Não categorizado',
-          },
-        });
-      }
     }
-    return alerts;
   }
 
-  /**
-   * Detecta anomalias em despesas mensais.
-   */
-  async detectExpenseAnomalies(
-    companyId: string,
-    currentMonth: Date,
-  ): Promise<Partial<Alert>[]> {
-    const rules = await prisma.alertRule.findMany({
-      where: {
-        companyId,
-        type: 'EXPENSE_ANOMALY',
-        isActive: true,
+  return alerts;
+}
+
+/**
+ * Detecta anomalias sazonais (comparação com mesmo período do ano anterior)
+ */
+async function detectSeasonalAnomalies(companyId: string): Promise<RawAlert[]> {
+  const alerts: RawAlert[] = [];
+  const currentMonth = new Date();
+  const lastYearMonth = addMonths(currentMonth, -12);
+
+  // Receita do mês atual
+  const currentRevenue = await prisma.transaction.aggregate({
+    _sum: { amount: true },
+    where: {
+      companyId,
+      tipo_transacao: TransactionType.INCOME,
+      date: {
+        gte: getMonthStart(currentMonth),
+        lte: getMonthEnd(currentMonth),
       },
-    });
+    },
+  });
 
-    if (rules.length === 0) return [];
+  // Receita do mesmo mês do ano passado
+  const lastYearRevenue = await prisma.transaction.aggregate({
+    _sum: { amount: true },
+    where: {
+      companyId,
+      tipo_transacao: TransactionType.INCOME,
+      date: {
+        gte: getMonthStart(lastYearMonth),
+        lte: getMonthEnd(lastYearMonth),
+      },
+    },
+  });
 
-    const alerts: Partial<Alert>[] = [];
-    const periodMonths = 3; // Analisar os últimos 3 meses para a média
+  const currentValue = currentRevenue._sum.amount?.toNumber() || 0;
+  const lastYearValue = lastYearRevenue._sum.amount?.toNumber() || 0;
 
-    for (const rule of rules) {
-      const config = rule.configuration as Prisma.JsonObject;
-      const percentageThreshold = (config?.percentageThreshold as number) || 20;
-      const categoryId = config?.categoryId as string | undefined;
+  if (lastYearValue > 0) {
+    const variation = ((currentValue - lastYearValue) / lastYearValue) * 100;
 
-      if (!categoryId) continue;
-
-      // Calcula a média dos últimos 'periodMonths'
-      const historicalStart = startOfMonth(addMonths(currentMonth, -periodMonths));
-      const historicalEnd = endOfMonth(addMonths(currentMonth, -1));
-
-      const historicalExpenses = await prisma.transaction.aggregate({
-        _sum: { amount: true },
-        where: {
-          companyId,
-          categoryId,
-          tipo_transacao: TransactionType.DESPESA,
-          date: { gte: historicalStart, lte: historicalEnd },
+    // Alerta de queda de receita
+    if (variation < -15) {
+      alerts.push({
+        type: 'SEASONAL_ANOMALY',
+        severity: 'HIGH',
+        title: `Receita ${Math.abs(variation).toFixed(0)}% abaixo do ano passado`,
+        category: 'Receita',
+        data: {
+          metric: 'revenue',
+          currentMonth: formatMonth(currentMonth),
+          currentValue,
+          lastYearValue,
+          variation: Math.round(variation),
+          comparisonType: 'year-over-year',
         },
       });
+    }
 
-      const averageExpense =
-        (historicalExpenses._sum.amount?.toNumber() || 0) / periodMonths;
-      if (averageExpense === 0) continue; // Não há base para comparação
-
-      // Despesas do mês atual
-      const currentMonthStart = startOfMonth(currentMonth);
-      const currentMonthEnd = endOfMonth(currentMonth);
-      const currentExpensesResult = await prisma.transaction.aggregate({
-        _sum: { amount: true },
-        where: {
-          companyId,
-          categoryId,
-          tipo_transacao: TransactionType.DESPESA,
-          date: { gte: currentMonthStart, lte: currentMonthEnd },
+    // Alerta de crescimento de receita
+    if (variation > 15) {
+      alerts.push({
+        type: 'SEASONAL_OPPORTUNITY',
+        severity: 'LOW',
+        title: `Receita ${variation.toFixed(0)}% acima do ano passado`,
+        category: 'Crescimento',
+        data: {
+          metric: 'revenue',
+          currentMonth: formatMonth(currentMonth),
+          currentValue,
+          lastYearValue,
+          variation: Math.round(variation),
         },
       });
-      const currentExpense = currentExpensesResult._sum.amount?.toNumber() || 0;
-
-      const deviation =
-        ((currentExpense - averageExpense) / averageExpense) * 100;
-
-      if (deviation > percentageThreshold) {
-        const category = await prisma.accountingCategory.findUnique({
-          where: { id: categoryId },
-        });
-        const description = `Anomalia de despesa detectada na categoria "${
-          category?.name
-        }". O gasto de ${currentExpense.toFixed(
-          2,
-        )} está ${deviation.toFixed(
-          0,
-        )}% acima da média mensal de ${averageExpense.toFixed(2)}.`;
-
-        alerts.push({
-          companyId,
-          type: 'EXPENSE_ANOMALY',
-          description,
-          severity: 'critical',
-          status: 'new',
-          metadata: {
-            categoryId,
-            categoryName: category?.name,
-            currentExpense,
-            averageExpense,
-            deviation,
-          },
-        });
-      }
     }
-    return alerts;
   }
 
-  /**
-   * Executa todos os detectores de alerta para uma empresa.
-   */
-  async runAll(
-    company: Company,
-    startDate: Date,
-    endDate: Date,
-  ): Promise<Partial<Alert>[]> {
-    const allAlerts: Partial<Alert>[] = [];
+  return alerts;
+}
 
-    const duplicateAlerts = await this.detectDuplicateTransactions(
-      company.id,
-      startDate,
-      endDate,
-    );
-    const highValueAlerts = await this.detectHighValueTransactions(
-      company,
-      startDate,
-      endDate,
-    );
-    const expenseAnomalyAlerts = await this.detectExpenseAnomalies(
-      company.id,
-      endDate, // Usar o fim do período como referência para o mês atual
-    );
+// ============================================
+// ORQUESTRADOR
+// ============================================
 
-    allAlerts.push(...duplicateAlerts, ...highValueAlerts, ...expenseAnomalyAlerts);
+/**
+ * Executa todos os detectores e retorna alertas brutos
+ */
+export async function detectAllAlerts(companyId: string): Promise<RawAlert[]> {
+  const allAlerts: RawAlert[] = [];
 
-    // Filtra alertas que já existem para as mesmas transações
-    const existingAlerts = await prisma.alert.findMany({
-      where: {
-        companyId: company.id,
-        relatedTransactionIds: {
-          hasSome: allAlerts.flatMap((a) => a.relatedTransactionIds || []),
-        },
-      },
-    });
+  try {
+    const [spikes, negotiations, seasonal] = await Promise.allSettled([
+      detectExpenseSpikes(companyId),
+      detectNegotiationOpportunities(companyId),
+      detectSeasonalAnomalies(companyId),
+    ]);
 
-    const newAlerts = allAlerts.filter((alert) => {
-      // CORREÇÃO: Acessar 'tipo_transacao' em vez de 'type'
-      if (alert.type === 'DUPLICATE_TRANSACTION') {
-        return !existingAlerts.some(
-          (existing) =>
-            existing.type === 'DUPLICATE_TRANSACTION' &&
-            JSON.stringify(existing.relatedTransactionIds.sort()) ===
-              JSON.stringify(alert.relatedTransactionIds?.sort()),
-        );
-      }
-      return !existingAlerts.some(
-        (existing) =>
-          existing.type === alert.type &&
-          existing.relatedTransactionIds.includes(
-            alert.relatedTransactionIds?.[0] || '',
-          ),
-      );
-    });
-
-    return newAlerts;
+    if (spikes.status === 'fulfilled') allAlerts.push(...spikes.value);
+    if (negotiations.status === 'fulfilled') allAlerts.push(...negotiations.value);
+    if (seasonal.status === 'fulfilled') allAlerts.push(...seasonal.value);
+  } catch (error) {
+    console.error('[Alerts Detector] Erro ao detectar alertas:', error);
   }
+
+  return allAlerts;
 }
