@@ -91,7 +91,27 @@ export async function classifyTransactions(
   const systemPrompt = `Você é um contador especializado em classificação contábil para PMEs brasileiras.
 Classifique cada transação abaixo em uma das categorias fornecidas.
 Retorne APENAS um JSON array com objetos contendo: id, categoryCode, confidence (0-1).
-Não inclua explicações, apenas o JSON.`;
+Não inclua explicações, apenas o JSON.
+
+REGRA IMPORTANTE PARA CUSTOS DE MERCADORIA VENDIDA (CMV):
+Qualquer custo diretamente atrelado ao produto deve ser classificado no grupo 3.x (Custos de Mercadoria Vendida).
+Isso inclui:
+- Fornecedor de matéria-prima → 3.1
+- Mercadoria para revenda, fornecedor de produtos → 3.2
+- Mão de obra direta de produção → 3.3
+- Frete sobre vendas, frete de entrega, logística → 3.4
+- Embalagens, caixas, fornecedor de embalagens → 3.5
+- Serviços terceirizados de produção → 3.6
+
+Exemplos de transações que são CMV:
+- "Boleto fornecedor de caixas" → 3.5 (Embalagens/CMV)
+- "Boleto fornecedor de embalagens" → 3.5 (Embalagens/CMV)
+- "Compra de mercadoria para revenda" → 3.2 (Mercadoria/CMV)
+- "Frete entrega cliente" → 3.4 (Frete/CMV)
+- "Compra de matéria-prima" → 3.1 (Matéria-Prima/CMV)
+
+NÃO classifique custos de CMV como Despesas Operacionais (5.x) ou Despesas Comerciais (6.x).
+Se a descrição mencionar fornecedor, matéria-prima, embalagem, caixa, mercadoria, revenda, frete de produto, é CMV (grupo 3.x).`;
 
   const userPrompt = `CATEGORIAS DISPONÍVEIS:
 ${categoryList}
