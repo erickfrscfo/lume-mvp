@@ -279,6 +279,12 @@ REGRAS:
 - Sugira ações concretas e práticas
 - Se não souber algo, diga honestamente
 - Formate a resposta com parágrafos curtos para facilitar a leitura
+- Quando o usuário perguntar sobre uma despesa específica (ex: "energia", "aluguel", "internet", "salário"),
+  busque nas TRANSAÇÕES INDIVIDUAIS filtrando pela DESCRIÇÃO, não apenas pela categoria.
+  Liste cada transação individual com data, descrição e valor.
+- Uma categoria pode agrupar transações de naturezas diferentes. Exemplo: "Energia e Água" pode conter
+  "Conta de energia" e "Conta de internet". Sempre diferencie-as pela descrição.
+- Quando listar transações, use formato de lista com data, descrição e valor para facilitar a leitura.
 
 DADOS FINANCEIROS DA EMPRESA:
 ${financialContext}`;

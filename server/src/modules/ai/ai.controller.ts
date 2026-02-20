@@ -480,6 +480,35 @@ ${biggestChanges || "  Sem variações significativas."}
 === CENÁRIOS FINANCEIROS ATIVOS ===
 ${scenarioText}`;
 
+  // ============================================
+  // TRANSAÇÕES INDIVIDUAIS RECENTES
+  // Permite à IA responder sobre transações específicas por descrição
+  // ============================================
+  const recentTransactions = allTransactions
+    .slice(-200) // Últimas 200 transações (já ordenadas por date ASC)
+    .reverse();  // Mais recentes primeiro
+
+  if (recentTransactions.length > 0) {
+    const txLines = recentTransactions.map((t) => {
+      const dateStr = `${String(t.date.getDate()).padStart(2, "0")}/${String(t.date.getMonth() + 1).padStart(2, "0")}/${t.date.getFullYear()}`;
+      const tipo = t.tipo_transacao === "INCOME" ? "Receita" : "Despesa";
+      const catName = t.category?.name || "Não classificado";
+      const tipoCusto = t.tipo_custo ? ` | ${t.tipo_custo === "FIXO" ? "Custo Fixo" : "Custo Variável"}` : "";
+      return `  - ${dateStr} | ${tipo} | ${catName} | "${t.description}" | R$ ${Number(t.amount).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${tipoCusto}`;
+    }).join("\n");
+
+    context += `\n\n=== TRANSAÇÕES INDIVIDUAIS (últimas ${recentTransactions.length} transações) ===
+IMPORTANTE: Use estes dados para responder perguntas sobre transações específicas.
+Quando o usuário perguntar sobre uma despesa específica (ex: "conta de energia", "aluguel", "internet"),
+filtre por DESCRIÇÃO da transação (não apenas por categoria).
+Uma mesma categoria pode conter transações de naturezas diferentes.
+Por exemplo, a categoria "Energia e Água" pode incluir tanto "Conta de energia unidade matriz" quanto "Conta de internet corporativa" — são despesas distintas.
+Sempre liste as transações individuais com data, descrição e valor quando o usuário pedir detalhes.
+
+Formato: Data | Tipo | Categoria | Descrição | Valor | Classificação de Custo
+${txLines}`;
+  }
+
   if (extraContext) {
     context += `\n\n=== CONTEXTO ADICIONAL (dados da tela) ===\n${extraContext}`;
   }
