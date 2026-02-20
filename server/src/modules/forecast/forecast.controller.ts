@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../../shared/database.js";
-import { authMiddleware } from "../../shared/middleware.js";
+import { authMiddleware } from "../auth/auth.middleware.js";
 
 const router = Router();
 router.use(authMiddleware);
@@ -206,9 +206,9 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       }
 
       const data = monthlyMap.get(monthKey)!;
-      const amount = Math.abs(tx.amount);
-      const tipoTransacao = (tx as any).tipo_transacao || tx.type;
-      const tipoCusto = (tx as any).tipo_custo;
+      const amount = Math.abs(Number(tx.amount));
+      const tipoTransacao = tx.tipo_transacao;
+      const tipoCusto = tx.tipo_custo;
       const categoryCode = tx.category?.code || "";
 
       if (tipoTransacao === "INCOME") {
