@@ -73,7 +73,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
       date: Date;
       description: string;
       amount: number;
-      type: "INCOME" | "EXPENSE";
+      tipo_transacao: "INCOME" | "EXPENSE";
       notes?: string;
     }> = [];
 
@@ -134,11 +134,11 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         errors.push({ line, error: `Tipo inválido: ${tipoStr}. Use ENTRADA ou SAIDA` });
         return;
       }
-      const type = (tipoStr === "ENTRADA" || tipoStr === "INCOME") ? "INCOME" : "EXPENSE";
+      const tipo_transacao = (tipoStr === "ENTRADA" || tipoStr === "INCOME") ? "INCOME" : "EXPENSE";
 
       const notes = record.observacao || record.Observacao || record.notes || "";
 
-      validTransactions.push({ date, description, amount, type, notes });
+      validTransactions.push({ date, description, amount, tipo_transacao, notes });
     });
 
     // Inserir transações válidas no banco
@@ -151,17 +151,19 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           date: t.date,
           description: t.description,
           amount: t.amount,
-          type: t.type,
+          tipo_transacao: t.tipo_transacao,
           notes: t.notes,
         })),
       });
       createdCount = created.count;
     }
 
-    // Classificar transações com IA (em background)
+    // ============================================
+    // CLASSIFICAÇÃO DE CATEGORIA (IA) - mantém lógica existente
+    // ============================================
     const unclassified = await prisma.transaction.findMany({
       where: { uploadId: uploadRecord.id, categoryId: null },
-      select: { id: true, description: true, amount: true, type: true },
+      select: { id: true, description: true, amount: true, tipo_transacao: true },
     });
 
     if (unclassified.length > 0) {
@@ -176,7 +178,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           id: t.id,
           description: t.description,
           amount: Number(t.amount),
-          type: t.type,
+          type: t.tipo_transacao,
         }));
 
         try {
@@ -203,6 +205,54 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         } catch (aiError) {
           console.error("Erro na classificação IA (lote):", aiError);
         }
+      }
+    }
+
+    // ============================================
+    // NOVA FUNCIONALIDADE: CLASSIFICAÇÃO DE TIPO DE CUSTO (IA)
+    // Classifica despesas como fixo ou variável automaticamente
+    // ============================================
+    const unclassifiedExpenses = await prisma.transaction.findMany({
+      where: {
+        uploadId: uploadRecord.id,
+        tipo_transacao: "EXPENSE",
+        tipo_custo: null,
+      },
+      include: { category: true },
+    });
+
+    if (unclassifiedExpenses.length > 0) {
+      // Preparar dados para classificação de tipo de custo
+      const expensesForCostClassification = unclassifiedExpenses.map((t) => ({
+        id: t.id,
+        description: t.description,
+        amount: Number(t.amount),
+        categoryName: t.category?.name,
+      }));
+
+      try {
+        const costClassifications = await aiService.classifyCostType(
+          userId,
+          expensesForCostClassification
+        );
+
+        // Atualizar transações com tipo de custo
+        for (const costClass of costClassifications) {
+          try {
+            await prisma.transaction.update({
+              where: { id: costClass.id },
+              data: {
+                tipo_custo: costClass.costType,
+                costConfidence: costClass.confidence,
+              },
+            });
+          } catch (updateError) {
+            console.error(`Erro ao atualizar tipo de custo da transação ${costClass.id}:`, updateError);
+          }
+        }
+      } catch (costClassError) {
+        console.error("Erro na classificação de tipo de custo (IA):", costClassError);
+        // Não bloqueia o upload se a classificação de custo falhar
       }
     }
 

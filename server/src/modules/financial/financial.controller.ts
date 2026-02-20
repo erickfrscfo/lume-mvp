@@ -22,8 +22,8 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
       where: { companyId },
     });
 
-    const totalIncome = allTransactions.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
-    const totalExpense = allTransactions.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
+    const totalIncome = allTransactions.filter((t) => t.tipo_transacao === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
+    const totalExpense = allTransactions.filter((t) => t.tipo_transacao === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
     const cashBalance = totalIncome - totalExpense;
 
     // Transações dos últimos 6 meses (para burn rate e variação mensal)
@@ -41,7 +41,7 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
     transactions.forEach((t) => {
       const monthKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
       if (!monthlyData[monthKey]) monthlyData[monthKey] = { income: 0, expense: 0 };
-      if (t.type === "INCOME") {
+      if (t.tipo_transacao === "INCOME") {
         monthlyData[monthKey].income += Number(t.amount);
       } else {
         monthlyData[monthKey].expense += Number(t.amount);
@@ -136,7 +136,7 @@ router.get("/cashflow", authMiddleware, async (req: Request, res: Response, next
     transactions.forEach((t) => {
       const monthKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
       if (!monthlyMap[monthKey]) monthlyMap[monthKey] = { income: 0, expense: 0 };
-      if (t.type === "INCOME") {
+      if (t.tipo_transacao === "INCOME") {
         monthlyMap[monthKey].income += Number(t.amount);
       } else {
         monthlyMap[monthKey].expense += Number(t.amount);
@@ -196,9 +196,18 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
     const type = req.query.type as string;
     const startDate = req.query.startDate as string;
     const endDate = req.query.endDate as string;
+    const costType = req.query.costType as string; // NOVO: filtro por tipo de custo
 
     const where: any = { companyId };
-    if (type === "INCOME" || type === "EXPENSE") where.type = type;
+    if (type === "INCOME" || type === "EXPENSE") where.tipo_transacao = type;
+
+    // NOVO: Filtro por tipo de custo
+    if (costType === "FIXO" || costType === "VARIAVEL") {
+      where.tipo_custo = costType;
+    } else if (costType === "PENDING") {
+      where.tipo_custo = null;
+      where.tipo_transacao = "EXPENSE"; // Apenas despesas podem ter tipo de custo pendente
+    }
 
     // Filtro de data (usar horário local, não UTC, para evitar problemas de fuso)
     if (startDate || endDate) {
@@ -236,7 +245,9 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
         date: t.date,
         description: t.description,
         amount: Number(t.amount),
-        type: t.type,
+        tipo_transacao: t.tipo_transacao,
+        tipo_custo: t.tipo_custo, // NOVO: incluir tipo de custo na resposta
+        costConfidence: t.costConfidence ? Number(t.costConfidence) : null, // NOVO
         category: t.category ? { code: t.category.code, name: t.category.name } : null,
         aiClassified: t.aiClassified,
         confidence: t.confidence ? Number(t.confidence) : null,
@@ -270,7 +281,7 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
         date: new Date(date),
         description,
         amount: Math.abs(parseFloat(amount)),
-        type: type === "INCOME" || type === "ENTRADA" ? "INCOME" : "EXPENSE",
+        tipo_transacao: type === "INCOME" || type === "ENTRADA" ? "INCOME" : "EXPENSE",
         notes: notes || "",
       },
     });
@@ -297,6 +308,69 @@ router.delete("/transactions/:id", authMiddleware, async (req: Request, res: Res
 
     await prisma.transaction.delete({ where: { id } });
     res.json({ success: true, message: "Transação excluída" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================
+// NOVO ENDPOINT: GET /api/financial/cost-breakdown
+// Retorna breakdown de custos fixos vs variáveis
+// ============================================
+router.get("/cost-breakdown", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const companyId = (req as any).companyId;
+    const months = parseInt(req.query.months as string) || 6;
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() - months);
+
+    const expenses = await prisma.transaction.findMany({
+      where: {
+        companyId,
+        tipo_transacao: "EXPENSE",
+        date: { gte: startDate },
+      },
+      select: {
+        amount: true,
+        tipo_custo: true,
+        date: true,
+      },
+    });
+
+    // Agrupar por mês e tipo de custo
+    const monthlyBreakdown: Record<string, {
+      fixo: number;
+      variavel: number;
+      pendente: number;
+    }> = {};
+
+    expenses.forEach((e) => {
+      const monthKey = `${e.date.getFullYear()}-${String(e.date.getMonth() + 1).padStart(2, "0")}`;
+      if (!monthlyBreakdown[monthKey]) {
+        monthlyBreakdown[monthKey] = { fixo: 0, variavel: 0, pendente: 0 };
+      }
+
+      const amount = Number(e.amount);
+      if (e.tipo_custo === "FIXO") {
+        monthlyBreakdown[monthKey].fixo += amount;
+      } else if (e.tipo_custo === "VARIAVEL") {
+        monthlyBreakdown[monthKey].variavel += amount;
+      } else {
+        monthlyBreakdown[monthKey].pendente += amount;
+      }
+    });
+
+    const result = Object.entries(monthlyBreakdown)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, data]) => ({
+        month,
+        fixo: data.fixo,
+        variavel: data.variavel,
+        pendente: data.pendente,
+        total: data.fixo + data.variavel + data.pendente,
+      }));
+
+    res.json({ success: true, data: result });
   } catch (error) {
     next(error);
   }

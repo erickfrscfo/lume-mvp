@@ -51,6 +51,173 @@ router.post("/explain", authMiddleware, async (req: Request, res: Response, next
   }
 });
 
+// ============================================
+// NOVO ENDPOINT: POST /api/ai/classify-cost-type
+// Classifica transações de despesa como custo fixo ou variável
+// ============================================
+const classifyCostSchema = z.object({
+  transactionIds: z.array(z.string()).optional(), // Se vazio, classifica todas as despesas sem tipo_custo
+});
+
+router.post("/classify-cost-type", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { transactionIds } = classifyCostSchema.parse(req.body);
+    const userId = (req as any).userId;
+    const companyId = (req as any).companyId;
+
+    // Buscar transações de despesa sem classificação de tipo de custo
+    const where: any = {
+      companyId,
+      tipo_transacao: "EXPENSE",
+      tipo_custo: null,
+    };
+
+    if (transactionIds && transactionIds.length > 0) {
+      where.id = { in: transactionIds };
+    }
+
+    const unclassifiedExpenses = await prisma.transaction.findMany({
+      where,
+      include: { category: true },
+      orderBy: { date: "desc" },
+      take: 100, // Limitar a 100 por vez para não sobrecarregar a IA
+    });
+
+    if (unclassifiedExpenses.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          classified: 0,
+          message: "Nenhuma despesa pendente de classificação de tipo de custo",
+        },
+      });
+    }
+
+    // Preparar dados para a IA
+    const transactionsForAi = unclassifiedExpenses.map((t) => ({
+      id: t.id,
+      description: t.description,
+      amount: Number(t.amount),
+      categoryName: t.category?.name,
+    }));
+
+    // Chamar IA para classificar
+    const classifications = await aiService.classifyCostType(userId, transactionsForAi);
+
+    // Atualizar transações no banco
+    let classifiedCount = 0;
+    for (const classification of classifications) {
+      try {
+        await prisma.transaction.update({
+          where: { id: classification.id },
+          data: {
+            tipo_custo: classification.costType,
+            costConfidence: classification.confidence,
+          },
+        });
+        classifiedCount++;
+      } catch (updateError) {
+        console.error(`Erro ao atualizar transação ${classification.id}:`, updateError);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        classified: classifiedCount,
+        total: unclassifiedExpenses.length,
+        message: `${classifiedCount} de ${unclassifiedExpenses.length} despesas classificadas com sucesso`,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================
+// NOVO ENDPOINT: GET /api/ai/pending-cost-classifications
+// Retorna transações de despesa que ainda não têm tipo_custo classificado
+// ============================================
+router.get("/pending-cost-classifications", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const companyId = (req as any).companyId;
+
+    const pendingExpenses = await prisma.transaction.findMany({
+      where: {
+        companyId,
+        tipo_transacao: "EXPENSE",
+        tipo_custo: null,
+      },
+      include: { category: true },
+      orderBy: { date: "desc" },
+      take: 50, // Limitar a 50 para não sobrecarregar o frontend
+    });
+
+    const formattedExpenses = pendingExpenses.map((t) => ({
+      id: t.id,
+      date: t.date,
+      description: t.description,
+      amount: Number(t.amount),
+      category: t.category ? { code: t.category.code, name: t.category.name } : null,
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        count: pendingExpenses.length,
+        transactions: formattedExpenses,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================
+// NOVO ENDPOINT: PUT /api/ai/update-cost-type/:id
+// Permite ao usuário corrigir manualmente a classificação de tipo de custo
+// ============================================
+const updateCostTypeSchema = z.object({
+  costType: z.enum(["FIXO", "VARIAVEL"]),
+});
+
+router.put("/update-cost-type/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const { costType } = updateCostTypeSchema.parse(req.body);
+    const companyId = (req as any).companyId;
+
+    // Verificar se a transação pertence à empresa do usuário
+    const transaction = await prisma.transaction.findFirst({
+      where: { id, companyId },
+    });
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, error: "Transação não encontrada" });
+    }
+
+    // Atualizar tipo de custo (confiança = 1.0 pois foi manual)
+    await prisma.transaction.update({
+      where: { id },
+      data: {
+        tipo_custo: costType,
+        costConfidence: 1.0, // Confiança máxima para classificação manual
+      },
+    });
+
+    res.json({
+      success: true,
+      data: {
+        id,
+        costType,
+        message: "Tipo de custo atualizado com sucesso",
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /api/ai/suggested-prompts — Perguntas prontas baseadas nos dados da empresa
 router.get("/suggested-prompts", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -176,7 +343,7 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     const amt = Number(t.amount);
     const catName = t.category?.name || "Não classificado";
 
-    if (t.type === "INCOME") {
+    if (t.tipo_transacao === "INCOME") {
       monthlyData[mk].income += amt;
       monthlyData[mk].incomeByCategory[catName] = (monthlyData[mk].incomeByCategory[catName] || 0) + amt;
     } else {
@@ -185,8 +352,8 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     }
   });
 
-  const totalIncome = allTransactions.filter((t) => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
-  const totalExpense = allTransactions.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
+  const totalIncome = allTransactions.filter((t) => t.tipo_transacao === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
+  const totalExpense = allTransactions.filter((t) => t.tipo_transacao === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
   const balance = totalIncome - totalExpense;
   const monthCount = Object.keys(monthlyData).length || 1;
   const avgMonthlyIncome = totalIncome / monthCount;

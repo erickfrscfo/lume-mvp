@@ -120,6 +120,93 @@ ${transactionList}`;
   }
 }
 
+// ============================================
+// NOVA FUNÇÃO: Classificar tipo de custo (fixo/variável)
+// ============================================
+export async function classifyCostType(
+  userId: string,
+  transactions: Array<{ id: string; description: string; amount: number; categoryName?: string }>
+) {
+  const transactionList = transactions
+    .map((t) => {
+      const category = t.categoryName ? ` | Categoria: ${t.categoryName}` : "";
+      return `ID: ${t.id} | Descrição: "${t.description}" | Valor: R$ ${t.amount}${category}`;
+    })
+    .join("\n");
+
+  const systemPrompt = `Você é um analista financeiro especializado em classificação de custos para PMEs brasileiras.
+
+Sua tarefa é classificar cada DESPESA como CUSTO FIXO ou CUSTO VARIÁVEL.
+
+DEFINIÇÕES:
+- CUSTO FIXO (FIXO): Despesas que NÃO variam com o volume de vendas/produção. Exemplos:
+  * Aluguel, IPTU, condomínio
+  * Salários fixos (administrativo, gerência)
+  * Assinaturas de software/SaaS (Netflix, Spotify, ERP, CRM)
+  * Seguros (empresarial, vida)
+  * Telefone/internet fixo
+  * Contador, advogado (honorários fixos)
+  * Licenças e taxas governamentais
+  * Depreciação de equipamentos
+
+- CUSTO VARIÁVEL (VARIAVEL): Despesas que VARIAM proporcionalmente ao volume de vendas/produção. Exemplos:
+  * Comissões de vendas
+  * Matéria-prima, insumos, mercadorias
+  * Frete e logística de entrega
+  * Embalagens
+  * Impostos sobre vendas (ICMS, PIS, COFINS)
+  * Energia elétrica de produção (se variar com produção)
+  * Mão de obra temporária/freelancer
+  * Marketing de performance (Google Ads, Facebook Ads - pago por resultado)
+
+REGRAS DE CLASSIFICAÇÃO:
+1. Se a descrição mencionar "assinatura", "mensalidade", "aluguel", "salário" → FIXO
+2. Se mencionar "comissão", "frete", "matéria-prima", "insumo", "embalagem" → VARIAVEL
+3. Se mencionar "ads", "anúncio", "campanha" → VARIAVEL (marketing de performance)
+4. Se for ambíguo, considere o contexto da categoria
+5. Dê um nível de confiança (confidence) de 0 a 1 para cada classificação
+
+FORMATO DE RESPOSTA:
+Retorne APENAS um JSON array com objetos contendo:
+- id: string (ID da transação)
+- costType: "FIXO" ou "VARIAVEL"
+- confidence: number (0-1, onde 1 = certeza absoluta)
+
+Não inclua explicações, apenas o JSON puro.`;
+
+  const userPrompt = `DESPESAS PARA CLASSIFICAR:
+${transactionList}
+
+Classifique cada uma como FIXO ou VARIAVEL com base nas definições acima.`;
+
+  const response = await callAi({
+    userId,
+    type: "COST_CLASSIFICATION",
+    systemPrompt,
+    userPrompt,
+    temperature: 0.1,
+    maxTokens: 3000,
+  });
+
+  try {
+    // Extrair JSON da resposta
+    const jsonMatch = response.content.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      // Validar estrutura
+      return parsed.filter((item: any) => 
+        item.id && 
+        (item.costType === "FIXO" || item.costType === "VARIAVEL") &&
+        typeof item.confidence === "number"
+      );
+    }
+    return [];
+  } catch (error) {
+    console.error("Erro ao parsear resposta da IA (classificação de custos):", response.content);
+    return [];
+  }
+}
+
 /// Explicar métrica (Explica pra Mim)
 export async function explainMetric(
   userId: string,
@@ -183,41 +270,32 @@ export async function chat(
   financialContext: string,
   chatHistory: Array<{ role: string; content: string }>
 ) {
-  const systemPrompt = `Você é o Lume, um CFO virtual inteligente e analítico. Seu papel é ser o braço direito financeiro do empreendedor.
+  const systemPrompt = `Você é o Lume, um CFO virtual inteligente. Seu papel é responder perguntas
+financeiras de forma clara e acessível para um empreendedor sem formação em finanças.
 
-IMPORTANTE — VOCÊ TEM ACESSO TOTAL AOS DADOS FINANCEIROS DA EMPRESA:
-Os dados abaixo são REAIS e extraídos diretamente do banco de dados da empresa. Use-os para responder QUALQUER pergunta financeira. Você DEVE calcular, analisar e responder com base nesses dados. NUNCA diga que não tem acesso aos dados.
+REGRAS:
+- Use linguagem simples e direta
+- Sempre use os dados reais da empresa quando disponíveis
+- Sugira ações concretas e práticas
+- Se não souber algo, diga honestamente
+- Formate a resposta com parágrafos curtos para facilitar a leitura
 
-DADOS FINANCEIROS COMPLETOS:
-${financialContext}
-
-REGRAS DE RESPOSTA:
-1. SEMPRE use os dados acima para responder. Eles são reais e atualizados.
-2. Quando perguntarem sobre um mês específico, consulte a seção "EVOLUÇÃO MENSAL DETALHADA" — lá estão receita, despesa, líquido, margem E as categorias detalhadas de CADA mês separadamente.
-3. CRÍTICO: Os dados na evolução mensal são POR MÊS. Use APENAS os valores do mês perguntado. NUNCA some valores de meses diferentes. Exemplo: se perguntarem "quanto gastei com salários em fevereiro?", use APENAS a linha de Salários dentro do bloco 2026-02, não some com outros meses.
-4. Para calcular margem de lucro: Margem = (Receita - Despesa) / Receita × 100. Os dados já estão na evolução mensal.
-5. Para comparações entre meses, use os dados mês a mês da evolução mensal.
-6. Use linguagem simples e direta, como se conversasse com um amigo empreendedor.
-7. NUNCA use jargões sem explicar.
-8. Sempre que possível, compare com o mês anterior e dê contexto ("isso é bom porque..." ou "isso preocupa porque...").
-9. Sugira ações concretas e práticas quando relevante.
-10. Formate a resposta com parágrafos curtos e use negrito (**texto**) para destacar números importantes.
-11. Se a pergunta envolver projeção futura, use os dados históricos como base e deixe claro que é uma estimativa.
-12. Ao mencionar valores, sempre use 2 casas decimais no formato brasileiro (R$ xx.xxx,xx).`;
+DADOS FINANCEIROS DA EMPRESA:
+${financialContext}`;
 
   const historyText = chatHistory
     .map((h) => `${h.role === "user" ? "USUÁRIO" : "LUME"}: ${h.content}`)
     .join("\n\n");
 
-  const userPrompt = `${historyText ? `HISTÓRICO DA CONVERSA:\n${historyText}\n\n` : ""}PERGUNTA DO USUÁRIO: ${message}`;
+  const userPrompt = `${historyText ? `HISTÓRICO:\n${historyText}\n\n` : ""}PERGUNTA DO USUÁRIO: ${message}`;
 
   const response = await callAi({
     userId,
     type: "CHAT",
     systemPrompt,
     userPrompt,
-    temperature: 0.5,
-    maxTokens: 3000,
+    temperature: 0.7,
+    maxTokens: 2000,
   });
 
   return {

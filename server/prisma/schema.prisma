@@ -107,33 +107,42 @@ model Category {
 // TRANSAÇÕES FINANCEIRAS
 // ============================================
 model Transaction {
-  id           String          @id @default(cuid())
-  companyId    String
-  uploadId     String?
-  date         DateTime
-  description  String
-  amount       Decimal         @db.Decimal(15, 2)
-  type         TransactionType
-  categoryId   String?
-  aiClassified Boolean         @default(false)
-  confidence   Decimal?        @db.Decimal(3, 2)
-  notes        String?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  id              String          @id @default(cuid())
+  companyId       String
+  uploadId        String?
+  date            DateTime
+  description     String
+  amount          Decimal         @db.Decimal(15, 2)
+  tipo_transacao  TransactionType // RENOMEADO: era "type"
+  categoryId      String?
+  aiClassified    Boolean         @default(false)
+  confidence      Decimal?        @db.Decimal(3, 2)
+  tipo_custo      CostType?       // NOVO CAMPO: classifica custo como fixo ou variável
+  costConfidence  Decimal?        @db.Decimal(3, 2) // NOVO: confiança da classificação de custo
+  notes           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   company  Company   @relation(fields: [companyId], references: [id])
   upload   Upload?   @relation(fields: [uploadId], references: [id])
   category Category? @relation(fields: [categoryId], references: [id])
 
   @@index([companyId, date])
-  @@index([companyId, type])
+  @@index([companyId, tipo_transacao])
   @@index([categoryId])
   @@index([uploadId])
+  @@index([tipo_custo]) // NOVO: índice para filtrar por tipo de custo
 }
 
 enum TransactionType {
   INCOME
   EXPENSE
+}
+
+// NOVO ENUM: Tipo de Custo (Fixo ou Variável)
+enum CostType {
+  FIXO      // Custos fixos: aluguel, salários, assinaturas
+  VARIAVEL  // Custos variáveis: comissões, matéria-prima, frete
 }
 
 // ============================================
@@ -189,6 +198,7 @@ enum AiInteractionType {
   EXPLANATION
   CHAT
   ANALYSIS
+  COST_CLASSIFICATION // NOVO: tipo de interação para classificação de custos
 }
 
 // ============================================
