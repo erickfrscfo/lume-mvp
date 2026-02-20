@@ -93,25 +93,53 @@ Classifique cada transação abaixo em uma das categorias fornecidas.
 Retorne APENAS um JSON array com objetos contendo: id, categoryCode, confidence (0-1).
 Não inclua explicações, apenas o JSON.
 
-REGRA IMPORTANTE PARA CUSTOS DE MERCADORIA VENDIDA (CMV):
-Qualquer custo diretamente atrelado ao produto deve ser classificado no grupo 3.x (Custos de Mercadoria Vendida).
-Isso inclui:
-- Fornecedor de matéria-prima → 3.1
-- Mercadoria para revenda, fornecedor de produtos → 3.2
+=== REGRA DE CONSISTÊNCIA (OBRIGATÓRIA) ===
+Trasações com a MESMA descrição DEVEM SEMPRE receber o MESMO código de categoria.
+Exemplo: se "Perdas e avarias de estoque" é classificada como 3.2, TODAS as ocorrências
+de "Perdas e avarias de estoque" devem ser 3.2. Nunca alterne entre categorias diferentes.
+
+=== CUSTOS DE MERCADORIA VENDIDA (CMV) - GRUPO 3.x ===
+Qualquer custo diretamente atrelado ao produto, estoque ou operação de venda é CMV.
+
+MAPEAMENTO OBRIGATÓRIO:
+- Matéria-prima, insumos de produção → 3.1
+- Mercadoria para revenda, compra de estoque, compra de mercadorias → 3.2
+- Perdas e avarias de estoque, quebras, devoluções de mercadoria → 3.2 (são perdas de mercadoria vendida)
 - Mão de obra direta de produção → 3.3
-- Frete sobre vendas, frete de entrega, logística → 3.4
+- Frete sobre vendas, frete de entrega, frete sobre compras, logística → 3.4
 - Embalagens, caixas, fornecedor de embalagens → 3.5
 - Serviços terceirizados de produção → 3.6
 
-Exemplos de transações que são CMV:
-- "Boleto fornecedor de caixas" → 3.5 (Embalagens/CMV)
-- "Boleto fornecedor de embalagens" → 3.5 (Embalagens/CMV)
-- "Compra de mercadoria para revenda" → 3.2 (Mercadoria/CMV)
-- "Frete entrega cliente" → 3.4 (Frete/CMV)
-- "Compra de matéria-prima" → 3.1 (Matéria-Prima/CMV)
+=== DESPESAS OPERACIONAIS - GRUPO 5.x ===
+- Aluguel da loja, aluguel escritório, condomínio, IPTU → 5.1
+- Energia elétrica, água, gás → 5.2
+- Salários, folha de pagamento, prolabore, pró-labore → 5.3
+- Internet, telefone, sistemas, ERP, software, SaaS → 5.4
 
-NÃO classifique custos de CMV como Despesas Operacionais (5.x) ou Despesas Comerciais (6.x).
-Se a descrição mencionar fornecedor, matéria-prima, embalagem, caixa, mercadoria, revenda, frete de produto, é CMV (grupo 3.x).`;
+=== DESPESAS COMERCIAIS - GRUPO 6.x ===
+- Marketing digital, Google Ads, Facebook Ads, campanhas → 6.1
+
+=== IMPOSTOS - GRUPO 4.x ===
+- Simples Nacional, ICMS, ISS, PIS, COFINS → 4.1
+
+EXEMPLOS CONCRETOS:
+- "Compra de mercadorias (estoque)" → 3.2
+- "Frete sobre compras" → 3.4
+- "Embalagens varejo/online" → 3.5
+- "Perdas e avarias de estoque" → 3.2 (SEMPRE 3.2, nunca 5.x)
+- "Folha de pagamento" → 5.3
+- "Prolabore" → 5.3
+- "Aluguel da loja" → 5.1
+- "Internet" → 5.4
+- "Sistemas e ERP" → 5.4
+- "Conta de energia" → 5.2
+- "Conta de agua" → 5.2
+- "Marketing digital" → 6.1
+- "Impostos Simples Nacional" → 4.1
+
+PROIBIÇÕES:
+- NÃO classifique CMV (mercadoria, estoque, frete, embalagem, perdas) como 5.x ou 6.x
+- NÃO classifique a mesma descrição em categorias diferentes em lotes distintos`;
 
   const userPrompt = `CATEGORIAS DISPONÍVEIS:
 ${categoryList}
@@ -158,33 +186,58 @@ export async function classifyCostType(
 
 Sua tarefa é classificar cada DESPESA como CUSTO FIXO ou CUSTO VARIÁVEL.
 
-DEFINIÇÕES:
-- CUSTO FIXO (FIXO): Despesas que NÃO variam com o volume de vendas/produção. Exemplos:
+=== REGRA DE CONSISTÊNCIA (OBRIGATÓRIA) ===
+Trasações com a MESMA descrição DEVEM SEMPRE receber o MESMO tipo de custo.
+Exemplo: se "Perdas e avarias de estoque" é VARIAVEL, TODAS as ocorrências devem ser VARIAVEL.
+
+=== DEFINIÇÕES ===
+
+CUSTO FIXO (FIXO): Despesas que NÃO variam com o volume de vendas/produção.
+Existem independentemente de vender muito ou pouco.
   * Aluguel, IPTU, condomínio
-  * Salários fixos (administrativo, gerência)
-  * Assinaturas de software/SaaS (Netflix, Spotify, ERP, CRM)
+  * Salários fixos, folha de pagamento, prolabore
+  * Assinaturas de software/SaaS (ERP, CRM, sistemas)
   * Seguros (empresarial, vida)
   * Telefone/internet fixo
   * Contador, advogado (honorários fixos)
   * Licenças e taxas governamentais
   * Depreciação de equipamentos
+  * Conta de energia (uso geral/administrativo)
+  * Conta de água (uso geral/administrativo)
 
-- CUSTO VARIÁVEL (VARIAVEL): Despesas que VARIAM proporcionalmente ao volume de vendas/produção. Exemplos:
+CUSTO VARIÁVEL (VARIAVEL): Despesas que VARIAM proporcionalmente ao volume de vendas/produção.
+Se vender mais, esse custo aumenta. Se vender menos, diminui.
+  * Compra de mercadorias, estoque
+  * Matéria-prima, insumos
+  * Frete sobre compras, frete de entrega
+  * Embalagens, caixas
+  * Perdas e avarias de estoque (proporcional ao volume de estoque)
+  * Impostos sobre vendas (Simples Nacional, ICMS, PIS, COFINS)
   * Comissões de vendas
-  * Matéria-prima, insumos, mercadorias
-  * Frete e logística de entrega
-  * Embalagens
-  * Impostos sobre vendas (ICMS, PIS, COFINS)
-  * Energia elétrica de produção (se variar com produção)
+  * Marketing de performance (Google Ads, Facebook Ads)
   * Mão de obra temporária/freelancer
-  * Marketing de performance (Google Ads, Facebook Ads - pago por resultado)
 
-REGRAS DE CLASSIFICAÇÃO:
-1. Se a descrição mencionar "assinatura", "mensalidade", "aluguel", "salário" → FIXO
-2. Se mencionar "comissão", "frete", "matéria-prima", "insumo", "embalagem" → VARIAVEL
-3. Se mencionar "ads", "anúncio", "campanha" → VARIAVEL (marketing de performance)
-4. Se for ambíguo, considere o contexto da categoria
-5. Dê um nível de confiança (confidence) de 0 a 1 para cada classificação
+=== MAPEAMENTO EXPLÍCITO POR DESCRIÇÃO ===
+- "Compra de mercadorias (estoque)" → VARIAVEL
+- "Frete sobre compras" → VARIAVEL
+- "Embalagens varejo/online" → VARIAVEL
+- "Perdas e avarias de estoque" → VARIAVEL (SEMPRE, varia com volume de estoque)
+- "Impostos Simples Nacional" → VARIAVEL (proporcional ao faturamento)
+- "Marketing digital" → VARIAVEL (proporcional ao investimento em vendas)
+- "Folha de pagamento" → FIXO
+- "Prolabore" → FIXO
+- "Aluguel da loja" → FIXO
+- "Internet" → FIXO
+- "Sistemas e ERP" → FIXO
+- "Conta de energia" → FIXO (uso geral, não varia com vendas)
+- "Conta de agua" → FIXO
+
+=== REGRAS ===
+1. Transações com a mesma descrição = mesmo tipo de custo, SEMPRE
+2. Qualquer custo ligado a mercadoria, estoque, frete, embalagem, perdas → VARIAVEL
+3. Qualquer custo de estrutura fixa (aluguel, salário, software, utilidades) → FIXO
+4. Impostos sobre faturamento → VARIAVEL
+5. Dê confidence de 0 a 1 para cada classificação
 
 FORMATO DE RESPOSTA:
 Retorne APENAS um JSON array com objetos contendo:
