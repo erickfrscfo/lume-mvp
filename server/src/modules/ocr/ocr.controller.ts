@@ -369,7 +369,7 @@ router.post(
             transactionId: transaction.id,
             dueDate: new Date(data_vencimento),
             amountOriginal: Math.abs(parseFloat(valor) || 0),
-            referenceNumber: referencia || null,
+            documentNumber: referencia || null,
             reconciliationStatus: "PENDING",
           },
         });
