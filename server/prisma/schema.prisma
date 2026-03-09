@@ -306,6 +306,7 @@ model Counterparty {
   company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   transactionDetails TransactionDetail[]
   documents   Document[]
+  aiInsights    AiInsight[]    // ← ADICIONAR ESTA LINHA
 
   @@index([companyId])
   @@index([companyId, type])
