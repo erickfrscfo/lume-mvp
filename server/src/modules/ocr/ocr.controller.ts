@@ -47,7 +47,7 @@ CONTEXTO IMPORTANTE: O usuário informou que este documento é uma ${tipoLabel}.
 
 Campos obrigatórios:
 {
-  "tipo_documento": "nota_fiscal" | "boleto" | "recibo" | "extrato" | "contrato" | "outro",
+  "tipo_documento": "INVOICE" | "RECEIPT" | "BANK_STATEMENT" | "CONTRACT" | "OTHER",
   "fornecedor_ou_cliente": "nome da empresa ou pessoa",
   "cnpj_cpf": "número do documento (CNPJ ou CPF) ou null",
   "valor_total": 0.00,
@@ -64,17 +64,36 @@ Campos obrigatórios:
 
 Regras:
 - O tipo_transacao já foi definido pelo usuário como "${tipoTransacao}", mantenha esse valor
+- tipo_documento DEVE ser um destes valores exatos: INVOICE, RECEIPT, BANK_STATEMENT, CONTRACT, OTHER
 - Valores devem ser numéricos (sem R$, sem pontos de milhar)
 - Datas no formato YYYY-MM-DD
 - Se não conseguir extrair algum campo, use null
 - O campo confianca indica sua confiança na extração (0.0 = nenhuma, 1.0 = total)`;
 }
 
+// Mapear tipo_documento da IA para o enum DocumentType do Prisma
+function mapDocumentType(tipo: string): "INVOICE" | "RECEIPT" | "BANK_STATEMENT" | "CONTRACT" | "OTHER" {
+  const map: Record<string, "INVOICE" | "RECEIPT" | "BANK_STATEMENT" | "CONTRACT" | "OTHER"> = {
+    "INVOICE": "INVOICE",
+    "RECEIPT": "RECEIPT",
+    "BANK_STATEMENT": "BANK_STATEMENT",
+    "CONTRACT": "CONTRACT",
+    "OTHER": "OTHER",
+    "nota_fiscal": "INVOICE",
+    "boleto": "INVOICE",
+    "recibo": "RECEIPT",
+    "extrato": "BANK_STATEMENT",
+    "contrato": "CONTRACT",
+    "outro": "OTHER",
+  };
+  return map[tipo] || "OTHER";
+}
+
 // ============================================
-// POST /api/ocr/upload — Upload e extração
+// POST /api/ocr/extract — Upload e extração
 // ============================================
 router.post(
-  "/upload",
+  "/extract",
   upload.single("file"),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -141,6 +160,9 @@ router.post(
       // Garantir que o tipo_transacao respeita a escolha do usuário
       extractedData.tipo_transacao = tipoTransacao;
 
+      // Mapear tipo de documento para o enum correto
+      const docType = mapDocumentType(extractedData.tipo_documento);
+
       // Salvar o documento no banco com os dados extraídos
       const document = await prisma.document.create({
         data: {
@@ -148,10 +170,14 @@ router.post(
           fileName: file.originalname,
           fileType: mimeType,
           fileSize: file.size,
-          documentType: extractedData.tipo_documento || "outro",
+          type: docType,
+          number: extractedData.referencia || `OCR-${Date.now()}`,
+          issueDate: extractedData.data_emissao ? new Date(extractedData.data_emissao) : new Date(),
+          amount: Math.abs(parseFloat(extractedData.valor_total) || 0),
+          description: extractedData.descricao || null,
           extractedData: extractedData,
           extractionConfidence: extractedData.confianca || 0.5,
-          status: "processed",
+          status: "ACTIVE",
         },
       });
 
@@ -161,7 +187,7 @@ router.post(
           documentId: document.id,
           fileName: file.originalname,
           extractedData: {
-            tipo_documento: extractedData.tipo_documento,
+            tipo_documento: docType,
             fornecedor_ou_cliente: extractedData.fornecedor_ou_cliente,
             cnpj_cpf: extractedData.cnpj_cpf,
             valor_total: extractedData.valor_total,
@@ -194,10 +220,10 @@ router.post(
 );
 
 // ============================================
-// GET /api/ocr/extract/:documentId — Obter dados extraídos
+// GET /api/ocr/document/:documentId — Obter dados extraídos
 // ============================================
 router.get(
-  "/extract/:documentId",
+  "/document/:documentId",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const companyId = (req as any).companyId;
@@ -222,7 +248,7 @@ router.get(
         data: {
           documentId: document.id,
           fileName: document.fileName,
-          documentType: document.documentType,
+          documentType: document.type,
           extractedData: document.extractedData,
           extractionConfidence: document.extractionConfidence,
           status: document.status,
@@ -272,7 +298,7 @@ router.post(
         });
       }
 
-      if (document.status === "confirmed") {
+      if (document.status === "ARCHIVED") {
         return res.status(400).json({
           success: false,
           error: "Este documento já foi confirmado e uma transação já foi criada.",
@@ -300,7 +326,7 @@ router.post(
               companyId,
               name: contraparte_nome,
               document: contraparte_documento || null,
-              type: tipo_transacao === "INCOME" ? "customer" : "supplier",
+              type: tipo_transacao === "INCOME" ? "CLIENT" : "SUPPLIER",
               isActive: true,
             },
           });
@@ -313,7 +339,6 @@ router.post(
       if (categoria) {
         const cat = await prisma.category.findFirst({
           where: {
-            companyId,
             name: { contains: categoria, mode: "insensitive" },
           },
         });
@@ -330,11 +355,10 @@ router.post(
           description: descricao || "Transação via documento",
           amount: Math.abs(parseFloat(valor) || 0),
           tipo_transacao: tipo_transacao || "EXPENSE",
-          source: "ocr",
-          status: data_vencimento ? "pending" : "completed",
+          source: "OCR",
+          status: data_vencimento ? "PENDING" : "COMPLETED",
           ...(categoryId && { categoryId }),
           ...(counterpartyId && { counterpartyId }),
-          ...(documentId && { documentId }),
         },
       });
 
@@ -346,17 +370,17 @@ router.post(
             dueDate: new Date(data_vencimento),
             amountOriginal: Math.abs(parseFloat(valor) || 0),
             referenceNumber: referencia || null,
-            reconciliationStatus: "pending",
+            reconciliationStatus: "PENDING",
           },
         });
       }
 
-      // Atualizar status do documento para confirmed
+      // Atualizar status do documento para ARCHIVED (= confirmado/processado)
       await prisma.document.update({
         where: { id: documentId },
         data: {
-          status: "confirmed",
-          transactionId: transaction.id,
+          status: "ARCHIVED",
+          counterpartyId: counterpartyId || undefined,
         },
       });
 
