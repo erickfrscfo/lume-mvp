@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../../shared/database.js";
+import { Prisma } from "@prisma/client";
 import { authMiddleware } from "../auth/auth.middleware.js";
 import multer from "multer";
 import OpenAI from "openai";
@@ -282,19 +283,16 @@ router.get(
         prisma.document.findMany({
           where: {
             companyId,
-            extractedData: { not: null },
+            extractedData: { not: Prisma.DbNull },
           },
           orderBy: { createdAt: "desc" },
           skip,
           take: limit,
-          include: {
-            counterparty: { select: { id: true, name: true } },
-          },
         }),
         prisma.document.count({
           where: {
             companyId,
-            extractedData: { not: null },
+            extractedData: { not: Prisma.DbNull },
           },
         }),
       ]);
@@ -310,7 +308,7 @@ router.get(
           status: doc.status,
           extractedData: doc.extractedData,
           extractionConfidence: doc.extractionConfidence,
-          counterparty: doc.counterparty,
+          counterpartyId: doc.counterpartyId,
           createdAt: doc.createdAt,
         })),
         pagination: {
