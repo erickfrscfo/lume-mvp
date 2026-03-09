@@ -127,5 +127,5 @@ app.listen(PORT, () => {
   console.log(`📊 Ambiente: ${env.NODE_ENV}`);
   console.log(`🔗 Health: http://localhost:${PORT}/api/health`);
 });
-
+// comentário para teste de commit
 export default app;
