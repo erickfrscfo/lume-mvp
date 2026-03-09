@@ -21,6 +21,11 @@ import counterpartiesController from "./modules/counterparties/counterparties.co
 import documentsController from "./modules/documents/documents.controller.js";
 import reconciliationsController from "./modules/reconciliations/reconciliations.controller.js";
 import insightsController from "./modules/insights/insights.controller.js";
+import transactionsController from "./modules/transactions/transactions.controller.js";
+import counterpartiesController from "./modules/counterparties/counterparties.controller.js";
+import documentsController from "./modules/documents/documents.controller.js";
+import reconciliationsController from "./modules/reconciliations/reconciliations.controller.js";
+import insightsController from "./modules/insights/insights.controller.js";
 
 const app = express();
 
@@ -56,6 +61,16 @@ app.use("/api/forecast", forecastController);
 // =============================================
 // NOVAS ROTAS - MVP v2 Conciliação
 // =============================================
+app.use("/api/transactions", transactionsController);
+app.use("/api/counterparties", counterpartiesController);
+app.use("/api/documents", documentsController);
+app.use("/api/reconciliations", reconciliationsController);
+app.use("/api/insights", insightsController);
+app.use("/api/transactions", transactionsController);
+app.use("/api/counterparties", counterpartiesController);
+app.use("/api/documents", documentsController);
+app.use("/api/reconciliations", reconciliationsController);
+app.use("/api/insights", insightsController);
 app.use("/api/transactions", transactionsController);
 app.use("/api/counterparties", counterpartiesController);
 app.use("/api/documents", documentsController);

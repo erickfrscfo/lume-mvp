@@ -18,6 +18,7 @@ model Company {
   code      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  
 
   users        User[]
   transactions Transaction[]
@@ -26,6 +27,7 @@ model Company {
   counterparties  Counterparty[]
   documents       Document[]
   reconciliations Reconciliation[]
+  aiInsights AiInsight[]  // NOVO
 
   @@index([code])
   @@index([cnpj])
@@ -125,6 +127,12 @@ model Transaction {
   notes           String?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+  status          TransactionStatus  @default(PENDING)     // NOVO
+  source          TransactionSource  @default(MANUAL)      // NOVO
+  counterpartyId  String?                                  // NOVO
+  documentId      String?                                  // NOVO
+  counterparty    Counterparty?      @relation(fields: [counterpartyId], references: [id]) // NOVO
+  document        Document?          @relation("TransactionDocument", fields: [documentId], references: [id]) // NOVO
 
   company  Company   @relation(fields: [companyId], references: [id])
   upload   Upload?   @relation(fields: [uploadId], references: [id])
@@ -147,6 +155,26 @@ enum TransactionType {
 enum CostType {
   FIXO      // Custos fixos: aluguel, salários, assinaturas
   VARIAVEL  // Custos variáveis: comissões, matéria-prima, frete
+}
+// NOVOS ENUM
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  OVERDUE
+  PARTIAL
+}
+
+enum TransactionSource {
+  MANUAL
+  UPLOAD
+  OCR
+  BANK_SYNC
+}
+
+enum ReconciliationConfirmStatus {
+  SUGGESTED
+  CONFIRMED
+  REJECTED
 }
 
 // ============================================
@@ -268,6 +296,12 @@ model Counterparty {
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  avgDaysToPay      Decimal?  @db.Decimal(10, 2)  // NOVO
+  avgDaysToReceive  Decimal?  @db.Decimal(10, 2)  // NOVO
+  latePaymentCount  Int       @default(0)          // NOVO
+  totalTransactions Int       @default(0)          // NOVO
+  reliabilityScore  Decimal?  @db.Decimal(3, 2)    // NOVO
+  transactions      Transaction[]                  // NOVO - relação reversa
 
   company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   transactionDetails TransactionDetail[]
@@ -301,6 +335,12 @@ model TransactionDetail {
   reconciledAt         DateTime?
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
+  receiptDate    DateTime?                         // NOVO
+  amountOriginal Decimal?  @db.Decimal(15, 2)      // NOVO
+  amountPaid     Decimal?  @db.Decimal(15, 2)      // NOVO
+  amountReceived Decimal?  @db.Decimal(15, 2)      // NOVO
+  discount       Decimal?  @db.Decimal(15, 2)      // NOVO
+  interest       Decimal?  @db.Decimal(15, 2)      // NOVO
 
   transaction    Transaction   @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   counterparty   Counterparty? @relation(fields: [counterpartyId], references: [id])
@@ -335,6 +375,12 @@ model Document {
   status          DocumentStatus @default(ACTIVE)
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
+  fileName              String?                    // NOVO
+  fileType              String?                    // NOVO
+  fileSize              Int?                       // NOVO
+  extractedData         Json?                      // NOVO
+  extractionConfidence  Decimal?  @db.Decimal(3, 2) // NOVO
+  transactionDocuments  Transaction[] @relation("TransactionDocument") // NOVO
 
   company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   counterparty Counterparty? @relation(fields: [counterpartyId], references: [id])
@@ -373,6 +419,13 @@ model Reconciliation {
   notes               String?
   reconciledBy        String   // userId
   createdAt           DateTime @default(now())
+  status                ReconciliationConfirmStatus @default(CONFIRMED) // NOVO
+  proofDescription      String?                    // NOVO
+  proofDocumentId       String?                    // NOVO
+  bankAccountId         String?                    // NOVO
+  bankTransactionRef    String?                    // NOVO
+  bankTransactionDate   DateTime?                  // NOVO
+  bankTransactionAmount Decimal?  @db.Decimal(15, 2) // NOVO
 
   company           Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   transactionDetail TransactionDetail @relation(fields: [transactionDetailId], references: [id], onDelete: Cascade)
@@ -387,6 +440,40 @@ enum ReconciliationMethod {
   AUTO_EXACT
   AUTO_FUZZY
   AI_SUGGESTED
+}
+
+// =============================================
+// NOVO MODEL: AiInsight
+// Adicionar ao final do schema.prisma
+// =============================================
+model AiInsight {
+  id                     String    @id @default(cuid())
+  companyId              String
+  insightType            String    // late_payment_pattern, cash_flow_risk, etc
+  severity               String    @default("MEDIUM")
+  title                  String
+  description            String?
+  recommendation         String?
+  relatedTransactionIds  String[]  @default([])
+  relatedCounterpartyId  String?
+  metadata               Json?     @default("{}")
+  potentialImpact        Decimal?  @db.Decimal(15, 2)
+  potentialSavings       Decimal?  @db.Decimal(15, 2)
+  isRead                 Boolean   @default(false)
+  isDismissed            Boolean   @default(false)
+  readAt                 DateTime?
+  actedAt                DateTime?
+  expiresAt              DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  counterparty Counterparty? @relation(fields: [relatedCounterpartyId], references: [id])
+
+  @@index([companyId])
+  @@index([companyId, isDismissed])
+  @@index([insightType])
+  @@index([createdAt])
 }
 
 // =============================================

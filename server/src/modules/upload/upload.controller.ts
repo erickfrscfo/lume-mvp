@@ -23,7 +23,11 @@ const upload = multer({
   },
 });
 
-// POST /api/upload/csv
+// =============================================
+// POST /api/upload/csv — Upload CSV com 9 colunas
+// Colunas aceitas: data, descricao, valor, tipo, status,
+//   contraparte, vencimento, documento, observacao
+// =============================================
 router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const file = req.file;
@@ -67,48 +71,60 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
       });
     }
 
-    // Validar e processar registros
+    // Buscar contrapartes existentes para matching
+    const existingCounterparties = await prisma.counterparty.findMany({
+      where: { companyId },
+      select: { id: true, name: true, document: true },
+    });
+
+    // Validar e processar registros (9 colunas)
     const errors: Array<{ line: number; error: string }> = [];
     const validTransactions: Array<{
       date: Date;
       description: string;
       amount: number;
       tipo_transacao: "INCOME" | "EXPENSE";
+      status: string;
+      counterpartyId?: string;
+      counterpartyName?: string;
+      dueDate?: Date;
+      documentNumber?: string;
       notes?: string;
     }> = [];
 
     records.forEach((record, index) => {
-      const line = index + 2; // +2 porque header é linha 1
+      const line = index + 2;
 
-      // Validar data
-      const dateStr = record.data || record.Data || record.DATE;
+      // 1. DATA (obrigatório)
+      const dateStr = record.data || record.Data || record.DATE || record.date;
       if (!dateStr) {
         errors.push({ line, error: "Campo 'data' ausente" });
         return;
       }
-      const dateParts = dateStr.split("/");
-      if (dateParts.length !== 3) {
-        errors.push({ line, error: `Data inválida: ${dateStr}. Use DD/MM/AAAA` });
-        return;
+      let date: Date;
+      if (dateStr.includes("/")) {
+        const dateParts = dateStr.split("/");
+        if (dateParts.length !== 3) {
+          errors.push({ line, error: `Data inválida: ${dateStr}. Use DD/MM/AAAA` });
+          return;
+        }
+        date = new Date(parseInt(dateParts[2]), parseInt(dateParts[1]) - 1, parseInt(dateParts[0]));
+      } else {
+        date = new Date(dateStr);
       }
-      const date = new Date(
-        parseInt(dateParts[2]),
-        parseInt(dateParts[1]) - 1,
-        parseInt(dateParts[0])
-      );
       if (isNaN(date.getTime())) {
         errors.push({ line, error: `Data inválida: ${dateStr}` });
         return;
       }
 
-      // Validar descrição
+      // 2. DESCRIÇÃO (obrigatório)
       const description = record.descricao || record.Descricao || record.DESCRICAO || record.description;
       if (!description) {
         errors.push({ line, error: "Campo 'descricao' ausente" });
         return;
       }
 
-      // Validar valor
+      // 3. VALOR (obrigatório)
       const valorStr = (record.valor || record.Valor || record.VALOR || record.amount || "")
         .toString()
         .replace(",", ".");
@@ -117,14 +133,11 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         errors.push({ line, error: `Valor inválido: ${valorStr}` });
         return;
       }
-      // Aceitar valores negativos — usar Math.abs e inferir tipo se necessário
       const amount = Math.abs(rawAmount);
-      // Se valor é negativo e não tem tipo definido, inferir como SAIDA
       const isNegativeValue = rawAmount < 0;
 
-      // Validar tipo
+      // 4. TIPO (opcional — inferido pelo valor se ausente)
       let tipoStr = (record.tipo || record.Tipo || record.TIPO || record.type || "").toUpperCase();
-      // Se tipo está vazio mas valor é negativo, inferir como SAIDA
       if (!tipoStr && isNegativeValue) {
         tipoStr = "SAIDA";
       } else if (!tipoStr && !isNegativeValue) {
@@ -136,26 +149,137 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
       }
       const tipo_transacao = (tipoStr === "ENTRADA" || tipoStr === "INCOME") ? "INCOME" : "EXPENSE";
 
-      const notes = record.observacao || record.Observacao || record.notes || "";
+      // 5. STATUS (opcional — default PENDING)
+      let statusStr = (record.status || record.Status || record.STATUS || "").toUpperCase();
+      const validStatuses = ["PENDING", "COMPLETED", "OVERDUE", "PARTIAL", "PENDENTE", "PAGO", "RECEBIDO", "VENCIDO", "PARCIAL"];
+      if (statusStr && !validStatuses.includes(statusStr)) {
+        statusStr = "PENDING";
+      }
+      // Mapear status em português
+      const statusMap: Record<string, string> = {
+        PENDENTE: "PENDING",
+        PAGO: "COMPLETED",
+        RECEBIDO: "COMPLETED",
+        VENCIDO: "OVERDUE",
+        PARCIAL: "PARTIAL",
+      };
+      const status = statusMap[statusStr] || statusStr || "PENDING";
 
-      validTransactions.push({ date, description, amount, tipo_transacao, notes });
+      // 6. CONTRAPARTE (opcional — busca por nome ou CNPJ/CPF)
+      const counterpartyStr = record.contraparte || record.Contraparte || record.CONTRAPARTE ||
+        record.fornecedor || record.Fornecedor || record.cliente || record.Cliente || "";
+      let counterpartyId: string | undefined;
+      let counterpartyName: string | undefined;
+      if (counterpartyStr) {
+        counterpartyName = counterpartyStr;
+        const match = existingCounterparties.find(
+          (cp) =>
+            cp.name.toLowerCase() === counterpartyStr.toLowerCase() ||
+            cp.document === counterpartyStr.replace(/[.\-/]/g, "")
+        );
+        if (match) {
+          counterpartyId = match.id;
+        }
+      }
+
+      // 7. VENCIMENTO (opcional)
+      const vencimentoStr = record.vencimento || record.Vencimento || record.VENCIMENTO ||
+        record.due_date || record.dueDate || "";
+      let dueDate: Date | undefined;
+      if (vencimentoStr) {
+        if (vencimentoStr.includes("/")) {
+          const parts = vencimentoStr.split("/");
+          dueDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        } else {
+          dueDate = new Date(vencimentoStr);
+        }
+        if (isNaN(dueDate.getTime())) dueDate = undefined;
+      }
+
+      // 8. DOCUMENTO (opcional — número da NF, boleto, etc)
+      const documentNumber = record.documento || record.Documento || record.DOCUMENTO ||
+        record.nota_fiscal || record.nf || record.NF || "";
+
+      // 9. OBSERVAÇÃO (opcional)
+      const notes = record.observacao || record.Observacao || record.OBSERVACAO ||
+        record.notes || record.obs || "";
+
+      validTransactions.push({
+        date,
+        description,
+        amount,
+        tipo_transacao,
+        status,
+        counterpartyId,
+        counterpartyName,
+        dueDate,
+        documentNumber: documentNumber || undefined,
+        notes: notes || undefined,
+      });
     });
+
+    // Criar contrapartes que não existem
+    const newCounterpartyNames = new Set<string>();
+    for (const t of validTransactions) {
+      if (t.counterpartyName && !t.counterpartyId) {
+        newCounterpartyNames.add(t.counterpartyName);
+      }
+    }
+
+    const createdCounterparties: Record<string, string> = {};
+    for (const name of newCounterpartyNames) {
+      try {
+        const cp = await prisma.counterparty.create({
+          data: {
+            companyId,
+            name,
+            type: "SUPPLIER", // Default, pode ser ajustado depois
+          },
+        });
+        createdCounterparties[name.toLowerCase()] = cp.id;
+      } catch (e) {
+        // Ignora se já existir
+      }
+    }
 
     // Inserir transações válidas no banco
     let createdCount = 0;
-    if (validTransactions.length > 0) {
-      const created = await prisma.transaction.createMany({
-        data: validTransactions.map((t) => ({
-          companyId,
-          uploadId: uploadRecord.id,
-          date: t.date,
-          description: t.description,
-          amount: t.amount,
-          tipo_transacao: t.tipo_transacao,
-          notes: t.notes,
-        })),
-      });
-      createdCount = created.count;
+    for (const t of validTransactions) {
+      try {
+        const cpId = t.counterpartyId || createdCounterparties[t.counterpartyName?.toLowerCase() || ""] || null;
+
+        const transaction = await prisma.transaction.create({
+          data: {
+            companyId,
+            uploadId: uploadRecord.id,
+            date: t.date,
+            description: t.description,
+            amount: t.amount,
+            tipo_transacao: t.tipo_transacao,
+            status: t.status as any,
+            source: "UPLOAD",
+            counterpartyId: cpId,
+            notes: t.notes,
+          },
+        });
+
+        // Criar detalhe se tiver dados extras
+        if (t.dueDate || t.documentNumber || cpId) {
+          await prisma.transactionDetail.create({
+            data: {
+              transactionId: transaction.id,
+              counterpartyId: cpId,
+              dueDate: t.dueDate,
+              documentNumber: t.documentNumber,
+              amountOriginal: t.amount,
+            },
+          });
+        }
+
+        createdCount++;
+      } catch (txError: any) {
+        errors.push({ line: 0, error: `Erro ao inserir: ${t.description} - ${txError.message}` });
+      }
     }
 
     // ============================================
@@ -171,7 +295,6 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         select: { code: true, name: true, type: true },
       });
 
-      // Processar em lotes de 20
       const batchSize = 20;
       for (let i = 0; i < unclassified.length; i += batchSize) {
         const batch = unclassified.slice(i, i + batchSize).map((t) => ({
@@ -188,7 +311,6 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
             categories.map((c) => ({ code: c.code, name: c.name, type: c.type }))
           );
 
-          // Atualizar transações com categorias
           for (const classification of classifications) {
             const category = categories.find((c) => c.code === classification.categoryCode);
             if (category) {
@@ -210,7 +332,6 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
 
     // ============================================
     // CLASSIFICAÇÃO DE TIPO DE CUSTO (IA) - em lotes de 20
-    // Classifica despesas como fixo ou variável automaticamente
     // ============================================
     const unclassifiedExpenses = await prisma.transaction.findMany({
       where: {
@@ -237,7 +358,6 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
             batch
           );
 
-          // Atualizar transações com tipo de custo
           for (const costClass of costClassifications) {
             try {
               await prisma.transaction.update({
@@ -253,17 +373,16 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           }
         } catch (costClassError) {
           console.error(`Erro na classificação de tipo de custo (lote ${Math.floor(i / costBatchSize) + 1}):`, costClassError);
-          // Não bloqueia o upload se um lote falhar, continua com o próximo
         }
       }
     }
 
     // Atualizar status do upload
-    const status = errors.length === 0 ? "COMPLETED" : validTransactions.length > 0 ? "PARTIAL" : "FAILED";
+    const uploadStatus = errors.length === 0 ? "COMPLETED" : validTransactions.length > 0 ? "PARTIAL" : "FAILED";
     await prisma.upload.update({
       where: { id: uploadRecord.id },
       data: {
-        status,
+        status: uploadStatus,
         rowCount: createdCount,
         errorCount: errors.length,
         errorDetails: errors.length > 0 ? errors : undefined,
@@ -273,18 +392,19 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
     // Limpar arquivo temporário
     fs.unlinkSync(file.path);
 
-    // Gerar alertas inteligentes em background (não bloqueia a resposta)
+    // Gerar alertas inteligentes em background
     generateAlerts(companyId, userId).catch((err) => console.error("[Alerts] Erro ao gerar alertas:", err));
 
     res.json({
       success: true,
       data: {
         uploadId: uploadRecord.id,
-        status,
+        status: uploadStatus,
         totalRows: records.length,
         imported: createdCount,
         errors: errors.length,
-        errorDetails: errors.slice(0, 10), // Máximo 10 erros na resposta
+        newCounterparties: Object.keys(createdCounterparties).length,
+        errorDetails: errors.slice(0, 10),
       },
     });
   } catch (error) {
@@ -292,7 +412,9 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
   }
 });
 
-// GET /api/upload/history
+// =============================================
+// GET /api/upload/history — Histórico de uploads
+// =============================================
 router.get("/history", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = (req as any).userId;
@@ -305,6 +427,23 @@ router.get("/history", authMiddleware, async (req: Request, res: Response, next:
   } catch (error) {
     next(error);
   }
+});
+
+// =============================================
+// GET /api/upload/template — Download template CSV
+// =============================================
+router.get("/template", authMiddleware, (_req: Request, res: Response) => {
+  const header = "data;descricao;valor;tipo;status;contraparte;vencimento;documento;observacao";
+  const example1 = "01/01/2025;Pagamento Aluguel;-3500.00;SAIDA;PAGO;Imobiliária Central;05/01/2025;NF-001;Aluguel sede";
+  const example2 = "05/01/2025;Recebimento Cliente ABC;12000.00;ENTRADA;RECEBIDO;ABC Tecnologia;10/01/2025;NF-100;Projeto web";
+  const example3 = "10/01/2025;Compra Material;-850.50;SAIDA;PENDENTE;Papelaria Express;15/01/2025;;Material escritório";
+  const example4 = "15/01/2025;Consultoria Mensal;8000.00;ENTRADA;PENDENTE;XYZ Corp;20/01/2025;NF-200;";
+
+  const csv = [header, example1, example2, example3, example4].join("\n");
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", "attachment; filename=template_transacoes_v2.csv");
+  res.send("\uFEFF" + csv); // BOM para Excel
 });
 
 export default router;

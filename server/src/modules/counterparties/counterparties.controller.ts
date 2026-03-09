@@ -17,6 +17,8 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
       type,
       search,
       isActive,
+      sortBy = "name",
+      sortOrder = "asc",
     } = req.query as Record<string, string>;
 
     const pageNum = Math.max(1, parseInt(page));
@@ -41,18 +43,15 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
       ];
     }
 
+    const orderBy: any = {};
+    const validFields = ["name", "createdAt", "totalTransactions", "reliabilityScore"];
+    const field = validFields.includes(sortBy) ? sortBy : "name";
+    orderBy[field] = sortOrder === "asc" ? "asc" : "desc";
+
     const [counterparties, total] = await Promise.all([
       prisma.counterparty.findMany({
         where,
-        include: {
-          _count: {
-            select: {
-              transactionDetails: true,
-              documents: true,
-            },
-          },
-        },
-        orderBy: { name: "asc" },
+        orderBy,
         skip,
         take: limitNum,
       }),
@@ -75,7 +74,7 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
 });
 
 // =============================================
-// GET /api/counterparties/:id — Detalhes de uma contraparte
+// GET /api/counterparties/:id — Detalhes com métricas
 // =============================================
 router.get("/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -90,10 +89,11 @@ router.get("/:id", authMiddleware, async (req: Request, res: Response, next: Nex
             transaction: {
               select: {
                 id: true,
+                date: true,
                 description: true,
                 amount: true,
-                date: true,
                 tipo_transacao: true,
+                status: true,
               },
             },
           },
@@ -101,7 +101,7 @@ router.get("/:id", authMiddleware, async (req: Request, res: Response, next: Nex
           take: 20,
         },
         documents: {
-          orderBy: { issueDate: "desc" },
+          orderBy: { createdAt: "desc" },
           take: 10,
         },
         _count: {
@@ -124,10 +124,65 @@ router.get("/:id", authMiddleware, async (req: Request, res: Response, next: Nex
 });
 
 // =============================================
+// GET /api/counterparties/:id/history — Histórico de transações
+// =============================================
+router.get("/:id/history", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const companyId = (req as any).companyId;
+    const { id } = req.params;
+    const { page = "1", limit = "20" } = req.query as Record<string, string>;
+
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    // Verificar se contraparte pertence à empresa
+    const counterparty = await prisma.counterparty.findFirst({
+      where: { id, companyId },
+    });
+
+    if (!counterparty) {
+      return res.status(404).json({ success: false, error: "Contraparte não encontrada" });
+    }
+
+    const [details, total] = await Promise.all([
+      prisma.transactionDetail.findMany({
+        where: { counterpartyId: id },
+        include: {
+          transaction: {
+            include: {
+              category: { select: { id: true, name: true, code: true } },
+            },
+          },
+          reconciliation: true,
+        },
+        orderBy: { transaction: { date: "desc" } },
+        skip,
+        take: limitNum,
+      }),
+      prisma.transactionDetail.count({ where: { counterpartyId: id } }),
+    ]);
+
+    res.json({
+      success: true,
+      data: details,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// =============================================
 // POST /api/counterparties — Criar contraparte
 // =============================================
-const createCounterpartySchema = z.object({
-  name: z.string().min(2, "Nome deve ter pelo menos 2 caracteres"),
+const createSchema = z.object({
+  name: z.string().min(2),
   document: z.string().optional(),
   type: z.enum(["SUPPLIER", "CLIENT", "BOTH"]).default("SUPPLIER"),
   email: z.string().email().optional().or(z.literal("")),
@@ -138,9 +193,9 @@ const createCounterpartySchema = z.object({
 router.post("/", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
-    const data = createCounterpartySchema.parse(req.body);
+    const data = createSchema.parse(req.body);
 
-    // Verificar duplicata por documento na mesma empresa
+    // Verificar duplicata por documento
     if (data.document) {
       const existing = await prisma.counterparty.findFirst({
         where: { companyId, document: data.document },
@@ -148,18 +203,14 @@ router.post("/", authMiddleware, async (req: Request, res: Response, next: NextF
       if (existing) {
         return res.status(409).json({
           success: false,
-          error: "Já existe uma contraparte com este documento",
+          error: `Já existe uma contraparte com o documento ${data.document}`,
           data: existing,
         });
       }
     }
 
     const counterparty = await prisma.counterparty.create({
-      data: {
-        companyId,
-        ...data,
-        email: data.email || null,
-      },
+      data: { companyId, ...data, email: data.email || null },
     });
 
     res.status(201).json({ success: true, data: counterparty });
@@ -171,7 +222,7 @@ router.post("/", authMiddleware, async (req: Request, res: Response, next: NextF
 // =============================================
 // PATCH /api/counterparties/:id — Atualizar contraparte
 // =============================================
-const updateCounterpartySchema = z.object({
+const updateSchema = z.object({
   name: z.string().min(2).optional(),
   document: z.string().optional(),
   type: z.enum(["SUPPLIER", "CLIENT", "BOTH"]).optional(),
@@ -185,7 +236,7 @@ router.patch("/:id", authMiddleware, async (req: Request, res: Response, next: N
   try {
     const companyId = (req as any).companyId;
     const { id } = req.params;
-    const data = updateCounterpartySchema.parse(req.body);
+    const data = updateSchema.parse(req.body);
 
     const existing = await prisma.counterparty.findFirst({
       where: { id, companyId },
@@ -197,10 +248,7 @@ router.patch("/:id", authMiddleware, async (req: Request, res: Response, next: N
 
     const updated = await prisma.counterparty.update({
       where: { id },
-      data: {
-        ...data,
-        email: data.email === "" ? null : data.email,
-      },
+      data: { ...data, email: data.email || null },
     });
 
     res.json({ success: true, data: updated });
@@ -210,7 +258,7 @@ router.patch("/:id", authMiddleware, async (req: Request, res: Response, next: N
 });
 
 // =============================================
-// DELETE /api/counterparties/:id — Remover contraparte
+// DELETE /api/counterparties/:id — Desativar contraparte
 // =============================================
 router.delete("/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -225,13 +273,13 @@ router.delete("/:id", authMiddleware, async (req: Request, res: Response, next: 
       return res.status(404).json({ success: false, error: "Contraparte não encontrada" });
     }
 
-    // Soft delete — apenas desativa
+    // Soft delete: desativar em vez de remover
     await prisma.counterparty.update({
       where: { id },
       data: { isActive: false },
     });
 
-    res.json({ success: true, message: "Contraparte desativada com sucesso" });
+    res.json({ success: true, message: "Contraparte desativada" });
   } catch (error) {
     next(error);
   }

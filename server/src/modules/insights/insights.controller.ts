@@ -1,12 +1,11 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { authMiddleware } from "../auth/auth.middleware.js";
 import { prisma } from "../../shared/database.js";
-import { z } from "zod";
 
 const router = Router();
 
 // =============================================
-// GET /api/insights — Listar alertas inteligentes
+// GET /api/insights — Listar insights/alertas inteligentes
 // =============================================
 router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -14,11 +13,9 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
     const {
       page = "1",
       limit = "20",
-      type,
+      insightType,
       severity,
-      isRead,
-      isDismissed,
-      category,
+      showDismissed = "false",
     } = req.query as Record<string, string>;
 
     const pageNum = Math.max(1, parseInt(page));
@@ -27,42 +24,47 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
 
     const where: any = { companyId };
 
-    if (type) {
-      where.type = type;
+    if (showDismissed !== "true") {
+      where.isDismissed = false;
+    }
+
+    if (insightType) {
+      where.insightType = insightType;
     }
 
     if (severity && ["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(severity)) {
       where.severity = severity;
     }
 
-    if (isRead !== undefined) {
-      where.isRead = isRead === "true";
-    }
+    // Filtrar insights expirados
+    where.OR = [
+      { expiresAt: null },
+      { expiresAt: { gt: new Date() } },
+    ];
 
-    if (isDismissed !== undefined) {
-      where.isDismissed = isDismissed === "true";
-    }
-
-    if (category) {
-      where.category = category;
-    }
-
-    const [alerts, total] = await Promise.all([
-      prisma.alert.findMany({
+    const [insights, total, unreadCount] = await Promise.all([
+      prisma.aiInsight.findMany({
         where,
+        include: {
+          counterparty: { select: { id: true, name: true } },
+        },
         orderBy: [
-          { isDismissed: "asc" },
+          { severity: "desc" },
           { createdAt: "desc" },
         ],
         skip,
         take: limitNum,
       }),
-      prisma.alert.count({ where }),
+      prisma.aiInsight.count({ where }),
+      prisma.aiInsight.count({
+        where: { companyId, isRead: false, isDismissed: false },
+      }),
     ]);
 
     res.json({
       success: true,
-      data: alerts,
+      data: insights,
+      unreadCount,
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -76,78 +78,56 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
 });
 
 // =============================================
-// GET /api/insights/summary — Resumo dos alertas
+// GET /api/insights/summary — Resumo de insights
 // =============================================
 router.get("/summary", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
 
-    const [total, unread, bySeverity, byType, totalSavings] = await Promise.all([
-      prisma.alert.count({ where: { companyId, isDismissed: false } }),
-      prisma.alert.count({ where: { companyId, isRead: false, isDismissed: false } }),
-      prisma.alert.groupBy({
-        by: ["severity"],
-        where: { companyId, isDismissed: false },
-        _count: { id: true },
-      }),
-      prisma.alert.groupBy({
-        by: ["type"],
-        where: { companyId, isDismissed: false },
-        _count: { id: true },
-      }),
-      prisma.alert.aggregate({
-        where: { companyId, isDismissed: false },
-        _sum: { potentialSavings: true },
-      }),
-    ]);
+    const insights = await prisma.aiInsight.findMany({
+      where: {
+        companyId,
+        isDismissed: false,
+        OR: [
+          { expiresAt: null },
+          { expiresAt: { gt: new Date() } },
+        ],
+      },
+    });
+
+    const bySeverity = {
+      CRITICAL: insights.filter((i) => i.severity === "CRITICAL").length,
+      HIGH: insights.filter((i) => i.severity === "HIGH").length,
+      MEDIUM: insights.filter((i) => i.severity === "MEDIUM").length,
+      LOW: insights.filter((i) => i.severity === "LOW").length,
+    };
+
+    const byType: Record<string, number> = {};
+    insights.forEach((i) => {
+      byType[i.insightType] = (byType[i.insightType] || 0) + 1;
+    });
+
+    const totalPotentialImpact = insights.reduce(
+      (sum, i) => sum + Number(i.potentialImpact || 0),
+      0
+    );
+
+    const totalPotentialSavings = insights.reduce(
+      (sum, i) => sum + Number(i.potentialSavings || 0),
+      0
+    );
 
     res.json({
       success: true,
       data: {
-        total,
-        unread,
-        potentialSavings: totalSavings._sum.potentialSavings || 0,
-        bySeverity: bySeverity.map((s) => ({
-          severity: s.severity,
-          count: s._count.id,
-        })),
-        byType: byType.map((t) => ({
-          type: t.type,
-          count: t._count.id,
-        })),
+        total: insights.length,
+        unread: insights.filter((i) => !i.isRead).length,
+        bySeverity,
+        byType,
+        totalPotentialImpact,
+        totalPotentialSavings,
       },
     });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// =============================================
-// GET /api/insights/:id — Detalhes de um alerta
-// =============================================
-router.get("/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const companyId = (req as any).companyId;
-    const { id } = req.params;
-
-    const alert = await prisma.alert.findFirst({
-      where: { id, companyId },
-    });
-
-    if (!alert) {
-      return res.status(404).json({ success: false, error: "Alerta não encontrado" });
-    }
-
-    // Marcar como lido automaticamente ao visualizar
-    if (!alert.isRead) {
-      await prisma.alert.update({
-        where: { id },
-        data: { isRead: true },
-      });
-      alert.isRead = true;
-    }
-
-    res.json({ success: true, data: alert });
   } catch (error) {
     next(error);
   }
@@ -161,17 +141,17 @@ router.patch("/:id/read", authMiddleware, async (req: Request, res: Response, ne
     const companyId = (req as any).companyId;
     const { id } = req.params;
 
-    const alert = await prisma.alert.findFirst({
+    const insight = await prisma.aiInsight.findFirst({
       where: { id, companyId },
     });
 
-    if (!alert) {
-      return res.status(404).json({ success: false, error: "Alerta não encontrado" });
+    if (!insight) {
+      return res.status(404).json({ success: false, error: "Insight não encontrado" });
     }
 
-    const updated = await prisma.alert.update({
+    const updated = await prisma.aiInsight.update({
       where: { id },
-      data: { isRead: true },
+      data: { isRead: true, readAt: new Date() },
     });
 
     res.json({ success: true, data: updated });
@@ -181,24 +161,24 @@ router.patch("/:id/read", authMiddleware, async (req: Request, res: Response, ne
 });
 
 // =============================================
-// PATCH /api/insights/:id/dismiss — Dispensar alerta
+// PATCH /api/insights/:id/dismiss — Dispensar insight
 // =============================================
 router.patch("/:id/dismiss", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
     const { id } = req.params;
 
-    const alert = await prisma.alert.findFirst({
+    const insight = await prisma.aiInsight.findFirst({
       where: { id, companyId },
     });
 
-    if (!alert) {
-      return res.status(404).json({ success: false, error: "Alerta não encontrado" });
+    if (!insight) {
+      return res.status(404).json({ success: false, error: "Insight não encontrado" });
     }
 
-    const updated = await prisma.alert.update({
+    const updated = await prisma.aiInsight.update({
       where: { id },
-      data: { isDismissed: true, isRead: true },
+      data: { isDismissed: true },
     });
 
     res.json({ success: true, data: updated });
@@ -208,47 +188,45 @@ router.patch("/:id/dismiss", authMiddleware, async (req: Request, res: Response,
 });
 
 // =============================================
-// POST /api/insights/read-all — Marcar todos como lidos
+// PATCH /api/insights/:id/act — Marcar como ação tomada
 // =============================================
-router.post("/read-all", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+router.patch("/:id/act", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
+    const { id } = req.params;
 
-    const result = await prisma.alert.updateMany({
-      where: { companyId, isRead: false },
-      data: { isRead: true },
+    const insight = await prisma.aiInsight.findFirst({
+      where: { id, companyId },
     });
 
-    res.json({
-      success: true,
-      data: { updated: result.count },
+    if (!insight) {
+      return res.status(404).json({ success: false, error: "Insight não encontrado" });
+    }
+
+    const updated = await prisma.aiInsight.update({
+      where: { id },
+      data: { actedAt: new Date(), isRead: true, readAt: insight.readAt || new Date() },
     });
+
+    res.json({ success: true, data: updated });
   } catch (error) {
     next(error);
   }
 });
 
 // =============================================
-// POST /api/insights/dismiss-all — Dispensar todos
+// POST /api/insights/mark-all-read — Marcar todos como lidos
 // =============================================
-router.post("/dismiss-all", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+router.post("/mark-all-read", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
-    const { type, severity } = req.body;
 
-    const where: any = { companyId, isDismissed: false };
-    if (type) where.type = type;
-    if (severity) where.severity = severity;
-
-    const result = await prisma.alert.updateMany({
-      where,
-      data: { isDismissed: true, isRead: true },
+    const result = await prisma.aiInsight.updateMany({
+      where: { companyId, isRead: false },
+      data: { isRead: true, readAt: new Date() },
     });
 
-    res.json({
-      success: true,
-      data: { dismissed: result.count },
-    });
+    res.json({ success: true, data: { updated: result.count } });
   } catch (error) {
     next(error);
   }

@@ -17,9 +17,11 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
       type,
       status,
       counterpartyId,
+      search,
       startDate,
       endDate,
-      search,
+      sortBy = "issueDate",
+      sortOrder = "desc",
     } = req.query as Record<string, string>;
 
     const pageNum = Math.max(1, parseInt(page));
@@ -40,12 +42,6 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
       where.counterpartyId = counterpartyId;
     }
 
-    if (startDate || endDate) {
-      where.issueDate = {};
-      if (startDate) where.issueDate.gte = new Date(startDate);
-      if (endDate) where.issueDate.lte = new Date(endDate);
-    }
-
     if (search) {
       where.OR = [
         { number: { contains: search, mode: "insensitive" } },
@@ -53,14 +49,25 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
       ];
     }
 
+    if (startDate || endDate) {
+      where.issueDate = {};
+      if (startDate) where.issueDate.gte = new Date(startDate);
+      if (endDate) where.issueDate.lte = new Date(endDate);
+    }
+
+    const orderBy: any = {};
+    const validFields = ["issueDate", "amount", "number", "createdAt"];
+    const field = validFields.includes(sortBy) ? sortBy : "issueDate";
+    orderBy[field] = sortOrder === "asc" ? "asc" : "desc";
+
     const [documents, total] = await Promise.all([
       prisma.document.findMany({
         where,
         include: {
-          counterparty: { select: { id: true, name: true, document: true } },
-          reconciliation: { select: { id: true, createdAt: true } },
+          counterparty: { select: { id: true, name: true } },
+          reconciliation: { select: { id: true, method: true, createdAt: true } },
         },
-        orderBy: { issueDate: "desc" },
+        orderBy,
         skip,
         take: limitNum,
       }),
@@ -83,7 +90,7 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
 });
 
 // =============================================
-// GET /api/documents/:id — Detalhes de um documento
+// GET /api/documents/:id — Detalhes do documento
 // =============================================
 router.get("/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -97,17 +104,7 @@ router.get("/:id", authMiddleware, async (req: Request, res: Response, next: Nex
         reconciliation: {
           include: {
             transactionDetail: {
-              include: {
-                transaction: {
-                  select: {
-                    id: true,
-                    description: true,
-                    amount: true,
-                    date: true,
-                    tipo_transacao: true,
-                  },
-                },
-              },
+              include: { transaction: true },
             },
           },
         },
@@ -127,56 +124,37 @@ router.get("/:id", authMiddleware, async (req: Request, res: Response, next: Nex
 // =============================================
 // POST /api/documents — Criar documento
 // =============================================
-const createDocumentSchema = z.object({
-  type: z.enum(["INVOICE", "RECEIPT", "BANK_STATEMENT", "CONTRACT", "OTHER"]),
-  number: z.string().min(1, "Número do documento é obrigatório"),
-  issueDate: z.string(),
-  amount: z.number().positive("Valor deve ser positivo"),
-  description: z.string().optional(),
+const createSchema = z.object({
   counterpartyId: z.string().optional(),
-  fileUrl: z.string().url().optional(),
+  type: z.enum(["INVOICE", "RECEIPT", "BANK_STATEMENT", "CONTRACT", "OTHER"]),
+  number: z.string().min(1),
+  issueDate: z.string(),
+  amount: z.number(),
+  description: z.string().optional(),
+  fileUrl: z.string().optional(),
+  fileName: z.string().optional(),
+  fileType: z.string().optional(),
+  fileSize: z.number().optional(),
 });
 
 router.post("/", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
-    const data = createDocumentSchema.parse(req.body);
-
-    // Verificar duplicata de número na mesma empresa
-    const existing = await prisma.document.findFirst({
-      where: { companyId, number: data.number, type: data.type },
-    });
-
-    if (existing) {
-      return res.status(409).json({
-        success: false,
-        error: "Já existe um documento com este número e tipo",
-      });
-    }
-
-    // Verificar se counterpartyId pertence à empresa
-    if (data.counterpartyId) {
-      const counterparty = await prisma.counterparty.findFirst({
-        where: { id: data.counterpartyId, companyId },
-      });
-      if (!counterparty) {
-        return res.status(400).json({
-          success: false,
-          error: "Contraparte não encontrada",
-        });
-      }
-    }
+    const data = createSchema.parse(req.body);
 
     const document = await prisma.document.create({
       data: {
         companyId,
+        counterpartyId: data.counterpartyId || null,
         type: data.type,
         number: data.number,
         issueDate: new Date(data.issueDate),
         amount: data.amount,
-        description: data.description || null,
-        counterpartyId: data.counterpartyId || null,
-        fileUrl: data.fileUrl || null,
+        description: data.description,
+        fileUrl: data.fileUrl,
+        fileName: data.fileName,
+        fileType: data.fileType,
+        fileSize: data.fileSize,
       },
       include: {
         counterparty: { select: { id: true, name: true } },
@@ -192,21 +170,24 @@ router.post("/", authMiddleware, async (req: Request, res: Response, next: NextF
 // =============================================
 // PATCH /api/documents/:id — Atualizar documento
 // =============================================
-const updateDocumentSchema = z.object({
+const updateSchema = z.object({
+  counterpartyId: z.string().nullable().optional(),
+  type: z.enum(["INVOICE", "RECEIPT", "BANK_STATEMENT", "CONTRACT", "OTHER"]).optional(),
   number: z.string().optional(),
   issueDate: z.string().optional(),
-  amount: z.number().positive().optional(),
+  amount: z.number().optional(),
   description: z.string().optional(),
-  counterpartyId: z.string().optional(),
-  fileUrl: z.string().url().optional(),
+  fileUrl: z.string().optional(),
   status: z.enum(["ACTIVE", "CANCELLED", "ARCHIVED"]).optional(),
+  extractedData: z.any().optional(),
+  extractionConfidence: z.number().optional(),
 });
 
 router.patch("/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
     const { id } = req.params;
-    const data = updateDocumentSchema.parse(req.body);
+    const data = updateSchema.parse(req.body);
 
     const existing = await prisma.document.findFirst({
       where: { id, companyId },
@@ -249,13 +230,12 @@ router.delete("/:id", authMiddleware, async (req: Request, res: Response, next: 
       return res.status(404).json({ success: false, error: "Documento não encontrado" });
     }
 
-    // Soft delete — muda status para ARCHIVED
     await prisma.document.update({
       where: { id },
       data: { status: "ARCHIVED" },
     });
 
-    res.json({ success: true, message: "Documento arquivado com sucesso" });
+    res.json({ success: true, message: "Documento arquivado" });
   } catch (error) {
     next(error);
   }
