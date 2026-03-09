@@ -21,6 +21,7 @@ import counterpartiesController from "./modules/counterparties/counterparties.co
 import documentsController from "./modules/documents/documents.controller.js";
 import reconciliationsController from "./modules/reconciliations/reconciliations.controller.js";
 import insightsController from "./modules/insights/insights.controller.js";
+import { ocrController } from "./modules/ocr/ocr.controller.js";
 
 
 const app = express();
@@ -62,6 +63,7 @@ app.use("/api/counterparties", counterpartiesController);
 app.use("/api/documents", documentsController);
 app.use("/api/reconciliations", reconciliationsController);
 app.use("/api/insights", insightsController);
+app.use("/api/ocr", authMiddleware, ocrController);
 
 
 
