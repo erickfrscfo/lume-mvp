@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../../shared/database.js";
+import { authMiddleware } from "../auth/auth.middleware.js";
 import multer from "multer";
 import OpenAI from "openai";
 
@@ -90,15 +91,58 @@ function mapDocumentType(tipo: string): "INVOICE" | "RECEIPT" | "BANK_STATEMENT"
 }
 
 // ============================================
+// Montar conteúdo para a API OpenAI
+// Suporta tanto imagens (via image_url) quanto PDFs (via file upload)
+// ============================================
+async function buildFileContent(file: Express.Multer.File): Promise<any> {
+  const base64 = file.buffer.toString("base64");
+  const mimeType = file.mimetype;
+
+  if (mimeType === "application/pdf") {
+    // PDF: Fazer upload via Files API e usar como file input no Chat Completions
+    // O GPT-4o extrai texto E imagens das páginas do PDF automaticamente
+    console.log(`[OCR] Enviando PDF para OpenAI Files API: ${file.originalname}`);
+    const uploadedFile = await openai.files.create({
+      file: new File([file.buffer], file.originalname, { type: mimeType }),
+      purpose: "user_data",
+    });
+
+    return {
+      type: "file" as const,
+      file: {
+        file_id: uploadedFile.id,
+      },
+    };
+  } else {
+    // Imagem: usar image_url com base64 (approach original)
+    return {
+      type: "image_url" as const,
+      image_url: {
+        url: `data:${mimeType};base64,${base64}`,
+        detail: "high" as const,
+      },
+    };
+  }
+}
+
+// ============================================
 // POST /api/ocr/extract — Upload e extração
 // ============================================
 router.post(
   "/extract",
+  authMiddleware,
   upload.single("file"),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const companyId = (req as any).companyId;
       const userId = (req as any).userId;
+
+      if (!companyId) {
+        return res.status(401).json({
+          success: false,
+          error: "Usuário não autenticado ou empresa não identificada.",
+        });
+      }
 
       if (!req.file) {
         return res.status(400).json({
@@ -108,22 +152,15 @@ router.post(
       }
 
       const file = req.file;
-      const base64 = file.buffer.toString("base64");
-      const mimeType = file.mimetype;
 
       // Tipo de transação informado pelo usuário (INCOME ou EXPENSE)
       const tipoTransacao = req.body?.tipo_transacao || "EXPENSE";
 
-      // Montar conteúdo da imagem para a API
-      const imageContent = {
-        type: "image_url" as const,
-        image_url: {
-          url: `data:${mimeType};base64,${base64}`,
-          detail: "high" as const,
-        },
-      };
+      // Montar conteúdo do arquivo para a API (suporta PDF e imagens)
+      console.log(`[OCR] Processando arquivo: ${file.originalname} (${file.mimetype}, ${(file.size / 1024).toFixed(1)}KB) | Company: ${companyId}`);
+      const fileContent = await buildFileContent(file);
 
-      // Chamar GPT-4o Vision com prompt dinâmico
+      // Chamar GPT-4o com prompt dinâmico
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
@@ -131,7 +168,7 @@ router.post(
             role: "user",
             content: [
               { type: "text", text: buildExtractionPrompt(tipoTransacao) },
-              imageContent,
+              fileContent,
             ],
           },
         ],
@@ -168,7 +205,7 @@ router.post(
         data: {
           companyId,
           fileName: file.originalname,
-          fileType: mimeType,
+          fileType: file.mimetype,
           fileSize: file.size,
           type: docType,
           number: extractedData.referencia || `OCR-${Date.now()}`,
@@ -180,6 +217,8 @@ router.post(
           status: "ACTIVE",
         },
       });
+
+      console.log(`[OCR] Extração concluída: ${file.originalname} → doc ${document.id} | confiança ${extractedData.confianca}`);
 
       res.json({
         success: true,
@@ -202,6 +241,13 @@ router.post(
         },
       });
     } catch (error: any) {
+      console.error("[OCR] Erro na extração:", error?.message || error);
+      if (error?.status === 400 && error?.message?.includes("MIME")) {
+        return res.status(400).json({
+          success: false,
+          error: "Formato de arquivo não suportado pela IA. Tente converter o PDF para imagem (JPG/PNG) e enviar novamente.",
+        });
+      }
       if (error?.status === 401) {
         return res.status(500).json({
           success: false,
@@ -220,10 +266,72 @@ router.post(
 );
 
 // ============================================
+// GET /api/ocr/history — Listar documentos importados via OCR
+// ============================================
+router.get(
+  "/history",
+  authMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const companyId = (req as any).companyId;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const skip = (page - 1) * limit;
+
+      const [documents, total] = await Promise.all([
+        prisma.document.findMany({
+          where: {
+            companyId,
+            extractedData: { not: null },
+          },
+          orderBy: { createdAt: "desc" },
+          skip,
+          take: limit,
+          include: {
+            counterparty: { select: { id: true, name: true } },
+          },
+        }),
+        prisma.document.count({
+          where: {
+            companyId,
+            extractedData: { not: null },
+          },
+        }),
+      ]);
+
+      res.json({
+        success: true,
+        data: documents.map((doc) => ({
+          id: doc.id,
+          fileName: doc.fileName,
+          type: doc.type,
+          number: doc.number,
+          amount: doc.amount,
+          status: doc.status,
+          extractedData: doc.extractedData,
+          extractionConfidence: doc.extractionConfidence,
+          counterparty: doc.counterparty,
+          createdAt: doc.createdAt,
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          pages: Math.ceil(total / limit),
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// ============================================
 // GET /api/ocr/document/:documentId — Obter dados extraídos
 // ============================================
 router.get(
   "/document/:documentId",
+  authMiddleware,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const companyId = (req as any).companyId;
@@ -266,6 +374,7 @@ router.get(
 // ============================================
 router.post(
   "/confirm/:documentId",
+  authMiddleware,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const companyId = (req as any).companyId;
