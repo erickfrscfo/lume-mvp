@@ -136,8 +136,10 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
       ],
     });
 
-    // Calcular economia potencial total
-    const totalSavings = alerts.reduce((sum, a) => sum + (a.potentialSavings || 0), 0);
+    // FIX: Converter Decimal para Number antes de somar
+    // O Prisma retorna campos Decimal como objetos Prisma.Decimal,
+    // que ao serem somados com + são convertidos para string (concatenação).
+    const totalSavings = alerts.reduce((sum, a) => sum + Number(a.potentialSavings || 0), 0);
     const unreadCount = alerts.filter((a) => !a.isRead).length;
 
     res.json({
@@ -151,7 +153,8 @@ router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFu
           text: a.humanizedText || a.templateText,
           templateText: a.templateText,
           category: a.category,
-          potentialSavings: a.potentialSavings,
+          // FIX: Converter Decimal para Number antes de enviar ao frontend
+          potentialSavings: a.potentialSavings ? Number(a.potentialSavings) : null,
           isRead: a.isRead,
           rawData: a.rawData,
           createdAt: a.createdAt,
