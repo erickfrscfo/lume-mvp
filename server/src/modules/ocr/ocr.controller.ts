@@ -35,7 +35,7 @@ const openai = new OpenAI({
 });
 
 // ============================================
-// PROMPT DE EXTRAÇÃO OCR (dinâmico)
+// PROMPT DE EXTRAÇÃO OCR (dinâmico) — agora inclui categoria e tipo_custo
 // ============================================
 function buildExtractionPrompt(tipoTransacao: string): string {
   const tipoLabel = tipoTransacao === "INCOME"
@@ -58,6 +58,8 @@ Campos obrigatórios:
   "tipo_transacao": "${tipoTransacao}",
   "descricao": "descrição resumida do documento",
   "referencia": "número da NF, boleto ou referência" ou null,
+  "categoria_sugerida": "nome da categoria contábil mais adequada",
+  "tipo_custo": "FIXO" | "VARIAVEL" | null,
   "itens": [
     { "descricao": "descrição do item", "valor": 0.00 }
   ],
@@ -70,7 +72,9 @@ Regras:
 - Valores devem ser numéricos (sem R$, sem pontos de milhar)
 - Datas no formato YYYY-MM-DD
 - Se não conseguir extrair algum campo, use null
-- O campo confianca indica sua confiança na extração (0.0 = nenhuma, 1.0 = total)`;
+- O campo confianca indica sua confiança na extração (0.0 = nenhuma, 1.0 = total)
+- categoria_sugerida: sugira a categoria contábil mais adequada (ex: "Despesas com Pessoal", "Despesas Operacionais", "Impostos e Tributos", "Prestação de Serviços", "Receita de Vendas", etc.)
+- tipo_custo: para DESPESAS, classifique como "FIXO" (aluguel, salários, assinaturas, seguros) ou "VARIAVEL" (comissões, matéria-prima, frete, marketing). Para RECEITAS, use null.`;
 }
 
 // Mapear tipo_documento da IA para o enum DocumentType do Prisma
@@ -100,8 +104,6 @@ async function buildFileContent(file: Express.Multer.File): Promise<any> {
   const mimeType = file.mimetype;
 
   if (mimeType === "application/pdf") {
-    // PDF: Fazer upload via Files API e usar como file input no Chat Completions
-    // O GPT-4o extrai texto E imagens das páginas do PDF automaticamente
     console.log(`[OCR] Enviando PDF para OpenAI Files API: ${file.originalname}`);
     const uploadedFile = await openai.files.create({
       file: new File([file.buffer], file.originalname, { type: mimeType }),
@@ -115,7 +117,6 @@ async function buildFileContent(file: Express.Multer.File): Promise<any> {
       },
     };
   } else {
-    // Imagem: usar image_url com base64 (approach original)
     return {
       type: "image_url" as const,
       image_url: {
@@ -124,6 +125,42 @@ async function buildFileContent(file: Express.Multer.File): Promise<any> {
       },
     };
   }
+}
+
+// ============================================
+// Buscar categoria por nome (fuzzy match)
+// ============================================
+async function findCategoryByName(name: string, type: string): Promise<{ id: string; name: string; code: string } | null> {
+  if (!name) return null;
+
+  // Tentar match exato primeiro
+  let cat = await prisma.category.findFirst({
+    where: {
+      name: { equals: name, mode: "insensitive" },
+      type: type as any,
+    },
+  });
+
+  if (!cat) {
+    // Tentar match parcial
+    cat = await prisma.category.findFirst({
+      where: {
+        name: { contains: name, mode: "insensitive" },
+        type: type as any,
+      },
+    });
+  }
+
+  if (!cat) {
+    // Tentar match com BOTH
+    cat = await prisma.category.findFirst({
+      where: {
+        name: { contains: name, mode: "insensitive" },
+      },
+    });
+  }
+
+  return cat ? { id: cat.id, name: cat.name, code: cat.code } : null;
 }
 
 // ============================================
@@ -201,6 +238,13 @@ router.post(
       // Mapear tipo de documento para o enum correto
       const docType = mapDocumentType(extractedData.tipo_documento);
 
+      // Tentar auto-match de categoria
+      let categoriaSugerida = extractedData.categoria_sugerida || null;
+      let categoriaMatch = null;
+      if (categoriaSugerida) {
+        categoriaMatch = await findCategoryByName(categoriaSugerida, tipoTransacao);
+      }
+
       // Salvar o documento no banco com os dados extraídos
       const document = await prisma.document.create({
         data: {
@@ -219,7 +263,7 @@ router.post(
         },
       });
 
-      console.log(`[OCR] Extração concluída: ${file.originalname} → doc ${document.id} | confiança ${extractedData.confianca}`);
+      console.log(`[OCR] Extração concluída: ${file.originalname} → doc ${document.id} | confiança ${extractedData.confianca} | categoria sugerida: ${categoriaSugerida} | match: ${categoriaMatch?.name || 'nenhum'}`);
 
       res.json({
         success: true,
@@ -236,6 +280,9 @@ router.post(
             tipo_transacao: extractedData.tipo_transacao,
             descricao: extractedData.descricao,
             referencia: extractedData.referencia,
+            categoria_sugerida: categoriaSugerida,
+            categoria_match: categoriaMatch,
+            tipo_custo: extractedData.tipo_custo || null,
             itens: extractedData.itens || [],
             confianca: extractedData.confianca,
           },
@@ -389,7 +436,10 @@ router.post(
         contraparte_nome,
         contraparte_documento,
         referencia,
+        tipo_custo,
       } = req.body;
+
+      console.log(`[OCR Confirm] Payload recebido:`, JSON.stringify(req.body, null, 2));
 
       const document = await prisma.document.findFirst({
         where: {
@@ -454,7 +504,15 @@ router.post(
         }
       }
 
-      // Criar a transação
+      // Determinar tipo_custo para despesas
+      let tipoCusto: "FIXO" | "VARIAVEL" | null = null;
+      if (tipo_transacao === "EXPENSE" || tipo_transacao === "DESPESA") {
+        if (tipo_custo === "FIXO" || tipo_custo === "VARIAVEL") {
+          tipoCusto = tipo_custo;
+        }
+      }
+
+      // Criar a transação com tipo_custo
       const transaction = await prisma.transaction.create({
         data: {
           companyId,
@@ -466,6 +524,8 @@ router.post(
           status: data_vencimento ? "PENDING" : "COMPLETED",
           ...(categoryId && { categoryId }),
           ...(counterpartyId && { counterpartyId }),
+          ...(tipoCusto && { tipo_custo: tipoCusto }),
+          ...(tipoCusto && { costConfidence: 0.85 }),
         },
       });
 
@@ -502,6 +562,8 @@ router.post(
         });
       }
 
+      console.log(`[OCR Confirm] Transação criada: ${transaction.id} | tipo_custo: ${tipoCusto} | categoria: ${categoryId} | vencimento: ${data_vencimento || 'N/A'}`);
+
       res.json({
         success: true,
         data: {
@@ -511,6 +573,7 @@ router.post(
         },
       });
     } catch (error) {
+      console.error("[OCR Confirm] Erro:", error);
       next(error);
     }
   }
