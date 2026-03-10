@@ -10,14 +10,23 @@ datasource db {
 // ============================================
 // EMPRESA
 // ============================================
+// Enum de setores para DRE dinâmica
+enum CompanySector {
+  VAREJO      // Varejo / Comércio
+  SERVICOS    // Serviços / Consultoria
+  INDUSTRIA   // Indústria / Manufatura
+  SAAS        // SaaS / Tecnologia
+  MISTO       // Misto / Outros
+}
+
 model Company {
-  id        String   @id @default(cuid())
+  id        String        @id @default(cuid())
   name      String
-  cnpj      String   @unique
-  sector    String
-  code      String   @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  cnpj      String        @unique
+  sector    CompanySector @default(MISTO)
+  code      String        @unique
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 
   users          User[]
   transactions   Transaction[]

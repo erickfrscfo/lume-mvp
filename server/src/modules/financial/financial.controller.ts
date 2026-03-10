@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { authMiddleware } from "../auth/auth.middleware.js";
 import { prisma } from "../../shared/database.js";
+import { getDREProfile, AVAILABLE_SECTORS } from "../../shared/dre-profiles.js";
 import { z } from "zod";
 
 const router = Router();
@@ -166,6 +167,14 @@ router.get("/dre", authMiddleware, async (req: Request, res: Response, next: Nex
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - months);
 
+    // Buscar o setor da empresa para determinar o perfil de DRE
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { sector: true },
+    });
+
+    const profile = getDREProfile(company?.sector || "MISTO");
+
     const transactions = await prisma.transaction.findMany({
       where: { companyId, date: { gte: startDate } },
       include: { category: true },
@@ -181,10 +190,26 @@ router.get("/dre", authMiddleware, async (req: Request, res: Response, next: Nex
       dreData[monthKey][catCode] = (dreData[monthKey][catCode] || 0) + Number(t.amount);
     });
 
-    res.json({ success: true, data: dreData });
+    res.json({
+      success: true,
+      data: dreData,
+      profile: {
+        sectorKey: profile.sectorKey,
+        sectorLabel: profile.sectorLabel,
+        directCostLabel: profile.directCostLabel,
+        grossProfitLabel: profile.grossProfitLabel,
+        directCostCodes: profile.directCostCodes,
+        excludeFromDirectCost: profile.excludeFromDirectCost,
+      },
+    });
   } catch (error) {
     next(error);
   }
+});
+
+// GET /api/financial/sectors — Lista de setores disponíveis
+router.get("/sectors", authMiddleware, async (_req: Request, res: Response) => {
+  res.json({ success: true, data: AVAILABLE_SECTORS });
 });
 
 // GET /api/financial/transactions

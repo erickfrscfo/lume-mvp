@@ -295,6 +295,13 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         select: { code: true, name: true, type: true },
       });
 
+      // Buscar setor da empresa para categorização mais precisa
+      const company = await prisma.company.findUnique({
+        where: { id: companyId },
+        select: { sector: true },
+      });
+      const companySector = company?.sector || "MISTO";
+
       const batchSize = 20;
       for (let i = 0; i < unclassified.length; i += batchSize) {
         const batch = unclassified.slice(i, i + batchSize).map((t) => ({
@@ -308,7 +315,8 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           const classifications = await aiService.classifyTransactions(
             userId,
             batch,
-            categories.map((c) => ({ code: c.code, name: c.name, type: c.type }))
+            categories.map((c) => ({ code: c.code, name: c.name, type: c.type })),
+            companySector
           );
 
           for (const classification of classifications) {

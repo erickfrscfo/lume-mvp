@@ -78,7 +78,8 @@ export async function callAi(options: AiCallOptions): Promise<AiResponse> {
 export async function classifyTransactions(
   userId: string,
   transactions: Array<{ id: string; description: string; amount: number; type: string }>,
-  categories: Array<{ code: string; name: string; type: string }>
+  categories: Array<{ code: string; name: string; type: string }>,
+  companySector?: string
 ) {
   const categoryList = categories
     .map((c) => `${c.code} - ${c.name} (${c.type})`)
@@ -174,19 +175,42 @@ INVESTIMENTOS (CAPEX) - GRUPO 9.x:
 - 9.4 Desenvolvimento de Software (desenvolvimento de sistema próprio, app)
 - 9.5 Obras e Reformas (reforma do escritório, obra)
 
-=== REGRAS PARA EMPRESAS DE SERVIÇO/CONSULTORIA ===
+=== REGRAS ESPECÍFICAS POR SETOR ===
+${companySector === "SERVICOS" ? `
+** EMPRESA DE SERVIÇOS/CONSULTORIA (PRIORIDADE ALTA) **
 - Receita de projeto de consultoria, assessoria, mentoria → 1.2
 - Receita recorrente (retainer, mensalidade de serviço) → 1.3
-- Salário de consultor que trabalha DIRETAMENTE em projetos de clientes → 3.3
-- Subcontratação de consultor externo para projeto de cliente → 3.6
-- Viagem/deslocamento PARA projeto de cliente → 3.4
+- Salário de consultor que trabalha DIRETAMENTE em projetos de clientes → 3.3 (CSP)
+- Subcontratação de consultor externo para projeto de cliente → 3.6 (CSP)
+- Viagem/deslocamento PARA projeto de cliente → 3.4 (CSP)
 - Salário de equipe administrativa/backoffice → 4.1
-
-=== REGRAS PARA COMÉRCIO/VAREJO ===
-- Compra de mercadoria, estoque → 3.2
-- Perdas e avarias de estoque → 3.2
-- Frete sobre compras/vendas → 3.4
-- Embalagens → 3.5
+- Freelancer/PJ alocado em projeto de cliente → 4.4 (CSP)
+- Software usado DIRETAMENTE na entrega ao cliente → 3.6
+- Software administrativo (ERP, CRM, Slack) → 5.4
+` : companySector === "SAAS" ? `
+** EMPRESA SaaS/TECNOLOGIA (PRIORIDADE ALTA) **
+- Receita de assinatura/SaaS → 1.3
+- Receita de implementação/setup → 1.2
+- Servidores, cloud (AWS, Azure, GCP) → 5.4 (Custo de Receita)
+- Salário de dev/suporte que mantém o produto → 3.3 (Custo de Receita)
+- Freelancer de desenvolvimento → 3.6 (Custo de Receita)
+- APIs e serviços terceiros (Stripe, Twilio, etc.) → 3.6
+- Salário de equipe administrativa → 4.1
+` : companySector === "INDUSTRIA" ? `
+** EMPRESA INDUSTRIAL/MANUFATURA (PRIORIDADE ALTA) **
+- Matéria-prima, insumos de produção → 3.1 (CPV)
+- Mão de obra direta da fábrica → 3.3 (CPV)
+- Embalagens de produção → 3.5 (CPV)
+- Frete de entrega → 3.4 (CPV)
+- Serviços terceirizados de produção → 3.6 (CPV)
+- Salário administrativo → 4.1
+` : `
+** EMPRESA DE VAREJO/COMÉRCIO **
+- Compra de mercadoria, estoque → 3.2 (CMV)
+- Perdas e avarias de estoque → 3.2 (CMV)
+- Frete sobre compras/vendas → 3.4 (CMV)
+- Embalagens → 3.5 (CMV)
+`}
 
 === PROIBIÇÕES ===
 - NÃO classifique impostos (Simples, ISS, ICMS, PIS, COFINS, IRPJ) como 4.x — use 8.x

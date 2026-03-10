@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../../shared/database.js";
 import { authMiddleware } from "../auth/auth.middleware.js";
+import { getDREProfile, isDirectCost } from "../../shared/dre-profiles.js";
 
 const router = Router();
 router.use(authMiddleware);
@@ -156,6 +157,13 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     const months = parseInt(req.query.months as string) || 6;
     const scenario = (req.query.scenario as string) || "realistic";
 
+    // Buscar setor da empresa para perfil de DRE dinâmico
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { sector: true },
+    });
+    const dreProfile = getDREProfile(company?.sector || "MISTO");
+
     if (!["realistic", "optimistic", "pessimistic"].includes(scenario)) {
       return res.status(400).json({ success: false, error: "Cenário inválido. Use: realistic, optimistic, pessimistic" });
     }
@@ -216,12 +224,12 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       } else {
         data.expense += amount;
 
-        // Classificar por grupo DRE
-        if (categoryCode.startsWith("3.")) {
-          // Grupo 3.x = CMV / Custos Diretos
+        // Classificar por grupo DRE usando perfil dinâmico
+        if (isDirectCost(categoryCode, dreProfile)) {
+          // Custo direto (CMV/CSP/CPV conforme setor)
           data.cmv += amount;
         } else if (categoryCode.startsWith("8.")) {
-          // Grupo 8.x = Impostos e Tributos (CORRIGIDO: era 4.x)
+          // Grupo 8.x = Impostos e Tributos
           data.taxes += amount;
         } else if (tipoCusto === "FIXO") {
           data.fixed += amount;
