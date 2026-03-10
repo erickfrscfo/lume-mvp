@@ -95,50 +95,103 @@ Não inclua explicações, apenas o JSON.
 
 === REGRA DE CONSISTÊNCIA (OBRIGATÓRIA) ===
 Trasações com a MESMA descrição DEVEM SEMPRE receber o MESMO código de categoria.
-Exemplo: se "Perdas e avarias de estoque" é classificada como 3.2, TODAS as ocorrências
-de "Perdas e avarias de estoque" devem ser 3.2. Nunca alterne entre categorias diferentes.
+Exemplo: se "Consultoria técnica" é classificada como 1.2, TODAS as ocorrências
+de "Consultoria técnica" devem ser 1.2. Nunca alterne entre categorias diferentes.
 
-=== CUSTOS DE MERCADORIA VENDIDA (CMV) - GRUPO 3.x ===
-Qualquer custo diretamente atrelado ao produto, estoque ou operação de venda é CMV.
+=== PLANO DE CONTAS COMPLETO ===
 
-MAPEAMENTO OBRIGATÓRIO:
-- Matéria-prima, insumos de produção → 3.1
-- Mercadoria para revenda, compra de estoque, compra de mercadorias → 3.2
-- Perdas e avarias de estoque, quebras, devoluções de mercadoria → 3.2 (são perdas de mercadoria vendida)
-- Mão de obra direta de produção → 3.3
-- Frete sobre vendas, frete de entrega, frete sobre compras, logística → 3.4
-- Embalagens, caixas, fornecedor de embalagens → 3.5
-- Serviços terceirizados de produção → 3.6
+RECEITAS:
+- 1.0 Receita Operacional (genérico)
+- 1.1 Venda de Produtos (produtos físicos, mercadorias)
+- 1.2 Prestação de Serviços (consultoria, projetos, horas técnicas, assessoria, treinamento)
+- 1.3 Assinaturas/Recorrência (mensalidades, retainers, contratos recorrentes)
+- 1.4 Comissões Recebidas (intermediação, indicação)
+- 2.0 Receita Não Operacional (genérico)
+- 2.1 Rendimentos Financeiros (juros recebidos, rendimento de aplicação, CDB, poupança)
+- 2.2 Aluguéis Recebidos (imóvel alugado, sublocação)
+- 2.3 Venda de Ativos (venda de equipamento, veículo, móvel usado)
+- 2.4 Empréstimos Recebidos (empréstimo bancário, aporte de sócio)
+- 2.5 Outras Receitas (reembolsos recebidos, receitas diversas)
 
-=== DESPESAS OPERACIONAIS - GRUPO 5.x ===
-- Aluguel da loja, aluguel escritório, condomínio, IPTU → 5.1
-- Energia elétrica, água, gás → 5.2
-- Salários, folha de pagamento, prolabore, pró-labore → 5.3
-- Internet, telefone, sistemas, ERP, software, SaaS → 5.4
+CUSTOS DIRETOS (CMV) - GRUPO 3.x:
+- 3.0 Custos Diretos (genérico)
+- 3.1 Matéria-Prima (insumos de produção)
+- 3.2 Mercadoria para Revenda (compra de estoque, perdas e avarias de estoque)
+- 3.3 Mão de Obra Direta (salário de consultor alocado em projeto, freelancer de projeto, subcontratação para entrega ao cliente)
+- 3.4 Frete sobre Vendas (frete de entrega, frete sobre compras, logística, deslocamento para projeto do cliente)
+- 3.5 Embalagens (embalagens, caixas)
+- 3.6 Serviços de Terceiros - Produção (subcontratação de consultores, terceirização de serviço para cliente)
 
-=== DESPESAS COMERCIAIS - GRUPO 6.x ===
-- Marketing digital, Google Ads, Facebook Ads, campanhas → 6.1
+DESPESAS COM PESSOAL - GRUPO 4.x:
+- 4.0 Despesas com Pessoal (genérico)
+- 4.1 Salários e Pró-Labore (folha de pagamento, salários, prolabore, pró-labore)
+- 4.2 Encargos Trabalhistas (FGTS, INSS funcionário, férias, 13º, rescisão)
+- 4.3 Benefícios (vale transporte, vale refeição, plano de saúde, vale alimentação)
+- 4.4 Prestadores PJ (pagamento a PJ, nota fiscal de serviço de prestador fixo)
+- 4.5 Treinamento e Capacitação (curso, certificação, workshop, evento)
 
-=== IMPOSTOS - GRUPO 4.x ===
-- Simples Nacional, ICMS, ISS, PIS, COFINS → 4.1
+DESPESAS OPERACIONAIS - GRUPO 5.x:
+- 5.0 Despesas Operacionais (genérico)
+- 5.1 Aluguel e Condomínio (aluguel escritório, aluguel loja, condomínio, IPTU)
+- 5.2 Energia e Água (conta de energia, conta de água, conta de luz, gás)
+- 5.3 Telecomunicações (internet, telefone, celular corporativo)
+- 5.4 Software e Assinaturas (ERP, CRM, SaaS, licença de software, sistema, Slack, Zoom)
+- 5.5 Material de Escritório (papelaria, toner)
+- 5.6 Manutenção e Reparos (manutenção de equipamento, reparo, conserto)
+- 5.7 Seguros (seguro empresarial, seguro de vida)
+- 5.8 Transporte e Deslocamento (uber, táxi, estacionamento, combustível)
 
-EXEMPLOS CONCRETOS:
-- "Compra de mercadorias (estoque)" → 3.2
-- "Frete sobre compras" → 3.4
-- "Embalagens varejo/online" → 3.5
-- "Perdas e avarias de estoque" → 3.2 (SEMPRE 3.2, nunca 5.x)
-- "Folha de pagamento" → 5.3
-- "Prolabore" → 5.3
-- "Aluguel da loja" → 5.1
-- "Internet" → 5.4
-- "Sistemas e ERP" → 5.4
-- "Conta de energia" → 5.2
-- "Conta de agua" → 5.2
-- "Marketing digital" → 6.1
-- "Impostos Simples Nacional" → 4.1
+DESPESAS COMERCIAIS - GRUPO 6.x:
+- 6.0 Despesas Comerciais (genérico)
+- 6.1 Marketing Digital (Google Ads, Facebook Ads, Instagram Ads, LinkedIn Ads, SEO)
+- 6.2 Marketing Offline (evento, feira, material impresso)
+- 6.3 Comissões de Vendas (comissão de vendedor, bônus de vendas)
+- 6.4 Ferramentas de Vendas (CRM de vendas, ferramenta de prospecção)
+- 6.5 Brindes e Amostras (brinde corporativo, amostra grátis)
 
-PROIBIÇÕES:
-- NÃO classifique CMV (mercadoria, estoque, frete, embalagem, perdas) como 5.x ou 6.x
+DESPESAS FINANCEIRAS - GRUPO 7.x:
+- 7.0 Despesas Financeiras (genérico)
+- 7.1 Juros de Empréstimos (juros bancários, juros de financiamento)
+- 7.2 Tarifas Bancárias (tarifa de conta, TED, DOC, Pix empresarial)
+- 7.3 Taxas de Cartão/Maquininha (taxa de cartão, taxa Stripe, taxa PagSeguro)
+- 7.4 Multas e Juros Pagos (multa por atraso, juros moratórios)
+- 7.5 IOF e Encargos (IOF, encargos financeiros)
+
+IMPOSTOS E TRIBUTOS - GRUPO 8.x:
+- 8.0 Impostos e Tributos (genérico)
+- 8.1 Simples Nacional / DAS (Simples Nacional, DAS, guia DAS)
+- 8.2 ISS (ISS, imposto sobre serviço)
+- 8.3 ICMS (ICMS)
+- 8.4 PIS/COFINS (PIS, COFINS)
+- 8.5 IRPJ/CSLL (IRPJ, CSLL, imposto de renda pessoa jurídica)
+- 8.6 INSS Patronal (INSS patronal, contribuição previdenciária patronal)
+- 8.7 Outros Tributos (taxa de licença, alvará, outros tributos)
+
+INVESTIMENTOS (CAPEX) - GRUPO 9.x:
+- 9.1 Equipamentos e Máquinas (computador, notebook, servidor, impressora)
+- 9.2 Móveis e Utensílios (mesa, cadeira, armário)
+- 9.3 Veículos (carro, moto, van)
+- 9.4 Desenvolvimento de Software (desenvolvimento de sistema próprio, app)
+- 9.5 Obras e Reformas (reforma do escritório, obra)
+
+=== REGRAS PARA EMPRESAS DE SERVIÇO/CONSULTORIA ===
+- Receita de projeto de consultoria, assessoria, mentoria → 1.2
+- Receita recorrente (retainer, mensalidade de serviço) → 1.3
+- Salário de consultor que trabalha DIRETAMENTE em projetos de clientes → 3.3
+- Subcontratação de consultor externo para projeto de cliente → 3.6
+- Viagem/deslocamento PARA projeto de cliente → 3.4
+- Salário de equipe administrativa/backoffice → 4.1
+
+=== REGRAS PARA COMÉRCIO/VAREJO ===
+- Compra de mercadoria, estoque → 3.2
+- Perdas e avarias de estoque → 3.2
+- Frete sobre compras/vendas → 3.4
+- Embalagens → 3.5
+
+=== PROIBIÇÕES ===
+- NÃO classifique impostos (Simples, ISS, ICMS, PIS, COFINS, IRPJ) como 4.x — use 8.x
+- NÃO classifique salários como 5.x — use 4.1
+- NÃO classifique CMV (mercadoria, estoque, frete, embalagem) como 5.x ou 6.x — use 3.x
 - NÃO classifique a mesma descrição em categorias diferentes em lotes distintos`;
 
   const userPrompt = `CATEGORIAS DISPONÍVEIS:

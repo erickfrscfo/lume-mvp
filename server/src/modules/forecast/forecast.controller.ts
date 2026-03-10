@@ -218,18 +218,26 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 
         // Classificar por grupo DRE
         if (categoryCode.startsWith("3.")) {
-          // Grupo 3.x = CMV
+          // Grupo 3.x = CMV / Custos Diretos
           data.cmv += amount;
-        } else if (categoryCode.startsWith("4.")) {
-          // Grupo 4.x = Impostos
+        } else if (categoryCode.startsWith("8.")) {
+          // Grupo 8.x = Impostos e Tributos (CORRIGIDO: era 4.x)
           data.taxes += amount;
         } else if (tipoCusto === "FIXO") {
           data.fixed += amount;
         } else if (tipoCusto === "VARIAVEL") {
           data.variable += amount;
         } else {
-          // Sem classificação — distribuir como variável
-          data.variable += amount;
+          // Sem classificação de custo — classificar por grupo DRE
+          if (categoryCode.startsWith("4.") || categoryCode.startsWith("5.")) {
+            // 4.x = Pessoal, 5.x = Operacional → custos fixos
+            data.fixed += amount;
+          } else if (categoryCode.startsWith("6.") || categoryCode.startsWith("7.")) {
+            // 6.x = Comercial, 7.x = Financeiro → custos variáveis
+            data.variable += amount;
+          } else {
+            data.variable += amount;
+          }
         }
       }
 

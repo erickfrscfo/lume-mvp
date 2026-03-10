@@ -6,7 +6,7 @@ import { prisma } from "./shared/database.js";
 import { AppError } from "./shared/errors.js";
 import { ZodError } from "zod";
 
-// Controllers existentes
+// Controllers
 import authController from "./modules/auth/auth.controller.js";
 import financialController from "./modules/financial/financial.controller.js";
 import aiController from "./modules/ai/ai.controller.js";
@@ -14,23 +14,17 @@ import uploadController from "./modules/upload/upload.controller.js";
 import scenariosController from "./modules/scenarios/scenarios.controller.js";
 import alertsController from "./modules/alerts/alerts.controller.js";
 import forecastController from "./modules/forecast/forecast.controller.js";
-
-// NOVOS Controllers - MVP v2 Conciliação
 import transactionsController from "./modules/transactions/transactions.controller.js";
 import counterpartiesController from "./modules/counterparties/counterparties.controller.js";
-import documentsController from "./modules/documents/documents.controller.js";
 import reconciliationsController from "./modules/reconciliations/reconciliations.controller.js";
+import documentsController from "./modules/documents/documents.controller.js";
 import insightsController from "./modules/insights/insights.controller.js";
-import { ocrController } from "./modules/ocr/ocr.controller.js";
-
-
-
 
 const app = express();
 
-// =============================================
+// ============================================
 // MIDDLEWARES GLOBAIS
-// =============================================
+// ============================================
 app.use(helmet());
 // CORS: aceitar qualquer origem no MVP
 const corsOrigin = env.CORS_ORIGIN === "*" ? true : env.CORS_ORIGIN;
@@ -46,9 +40,9 @@ if (env.NODE_ENV === "development") {
   });
 }
 
-// =============================================
-// ROTAS EXISTENTES
-// =============================================
+// ============================================
+// ROTAS
+// ============================================
 app.use("/api/auth", authController);
 app.use("/api/financial", financialController);
 app.use("/api/ai", aiController);
@@ -56,19 +50,11 @@ app.use("/api/upload", uploadController);
 app.use("/api/scenarios", scenariosController);
 app.use("/api/alerts", alertsController);
 app.use("/api/forecast", forecastController);
-
-// =============================================
-// NOVAS ROTAS - MVP v2 Conciliação
-// =============================================
 app.use("/api/transactions", transactionsController);
 app.use("/api/counterparties", counterpartiesController);
-app.use("/api/documents", documentsController);
 app.use("/api/reconciliations", reconciliationsController);
+app.use("/api/documents", documentsController);
 app.use("/api/insights", insightsController);
-app.use("/api/ocr", ocrController);
-
-
-
 
 // Health check
 app.get("/api/health", (_req, res) => {
@@ -79,9 +65,9 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-// =============================================
+// ============================================
 // ERROR HANDLER GLOBAL
-// =============================================
+// ============================================
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   // Erros de validação do Zod
   if (err instanceof ZodError) {
@@ -117,15 +103,24 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   });
 });
 
-// =============================================
-// INICIAR SERVIDOR
-// =============================================
-const PORT = env.PORT || 3001;
+// ============================================
+// INICIALIZAÇÃO
+// ============================================
+async function start() {
+  try {
+    // Testar conexão com banco
+    await prisma.$connect();
+    console.log("✅ Conectado ao banco de dados");
 
-app.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
-  console.log(`📊 Ambiente: ${env.NODE_ENV}`);
-  console.log(`🔗 Health: http://localhost:${PORT}/api/health`);
-});
-// comentário para teste de commit
-export default app;
+    app.listen(env.PORT, () => {
+      console.log(`🚀 Servidor Lume rodando na porta ${env.PORT}`);
+      console.log(`📊 Ambiente: ${env.NODE_ENV}`);
+      console.log(`🔗 URL: http://localhost:${env.PORT}`);
+    });
+  } catch (error) {
+    console.error("❌ Erro ao iniciar servidor:", error);
+    process.exit(1);
+  }
+}
+
+start();

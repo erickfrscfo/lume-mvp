@@ -18,16 +18,13 @@ model Company {
   code      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
 
-  users        User[]
-  transactions Transaction[]
-  scenarios    Scenario[]
-  alerts       Alert[]
-  counterparties  Counterparty[]
-  documents       Document[]
-  reconciliations Reconciliation[]
-  aiInsights AiInsight[]  // NOVO
+  users          User[]
+  transactions   Transaction[]
+  scenarios      Scenario[]
+  alerts         Alert[]
+  counterparties Counterparty[]
+  documents      Document[]
 
   @@index([code])
   @@index([cnpj])
@@ -109,6 +106,39 @@ model Category {
 }
 
 // ============================================
+// CONTRAPARTES (Fornecedores / Clientes)
+// ============================================
+model Counterparty {
+  id        String           @id @default(cuid())
+  companyId String
+  name      String
+  document  String?          // CNPJ ou CPF
+  type      CounterpartyType @default(SUPPLIER)
+  email     String?
+  phone     String?
+  address   String?
+  notes     String?
+  isActive  Boolean          @default(true)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  company            Company             @relation(fields: [companyId], references: [id])
+  transactions       Transaction[]
+  transactionDetails TransactionDetail[]
+  documents          Document[]
+
+  @@index([companyId])
+  @@index([companyId, isActive])
+  @@index([companyId, type])
+}
+
+enum CounterpartyType {
+  SUPPLIER
+  CLIENT
+  BOTH
+}
+
+// ============================================
 // TRANSAÇÕES FINANCEIRAS
 // ============================================
 model Transaction {
@@ -120,30 +150,30 @@ model Transaction {
   amount          Decimal         @db.Decimal(15, 2)
   tipo_transacao  TransactionType // RENOMEADO: era "type"
   categoryId      String?
+  counterpartyId  String?
+  status          String          @default("PENDING") // PENDING, COMPLETED, OVERDUE, PARTIAL
+  source          String          @default("CSV")     // CSV, MANUAL, OFX, API
   aiClassified    Boolean         @default(false)
   confidence      Decimal?        @db.Decimal(3, 2)
-  tipo_custo      CostType?       // NOVO CAMPO: classifica custo como fixo ou variável
-  costConfidence  Decimal?        @db.Decimal(3, 2) // NOVO: confiança da classificação de custo
+  tipo_custo      CostType?       // classifica custo como fixo ou variável
+  costConfidence  Decimal?        @db.Decimal(3, 2)
   notes           String?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
-  status          TransactionStatus  @default(PENDING)     // NOVO
-  source          TransactionSource  @default(MANUAL)      // NOVO
-  counterpartyId  String?                                  // NOVO
-  documentId      String?                                  // NOVO
-  counterparty    Counterparty?      @relation(fields: [counterpartyId], references: [id]) // NOVO
-  document        Document?          @relation("TransactionDocument", fields: [documentId], references: [id]) // NOVO
 
-  company  Company   @relation(fields: [companyId], references: [id])
-  upload   Upload?   @relation(fields: [uploadId], references: [id])
-  category Category? @relation(fields: [categoryId], references: [id])
+  company      Company            @relation(fields: [companyId], references: [id])
+  upload       Upload?            @relation(fields: [uploadId], references: [id])
+  category     Category?          @relation(fields: [categoryId], references: [id])
+  counterparty Counterparty?      @relation(fields: [counterpartyId], references: [id])
+  detail       TransactionDetail?
 
   @@index([companyId, date])
   @@index([companyId, tipo_transacao])
   @@index([categoryId])
   @@index([uploadId])
-  @@index([tipo_custo]) // NOVO: índice para filtrar por tipo de custo
-  detail TransactionDetail?
+  @@index([tipo_custo])
+  @@index([counterpartyId])
+  @@index([status])
 }
 
 enum TransactionType {
@@ -156,25 +186,60 @@ enum CostType {
   FIXO      // Custos fixos: aluguel, salários, assinaturas
   VARIAVEL  // Custos variáveis: comissões, matéria-prima, frete
 }
-// NOVOS ENUM
-enum TransactionStatus {
-  PENDING
-  COMPLETED
-  OVERDUE
-  PARTIAL
+
+// ============================================
+// DETALHES DE TRANSAÇÃO (Conciliação)
+// ============================================
+model TransactionDetail {
+  id                   String  @id @default(cuid())
+  transactionId        String  @unique
+  reconciliationStatus String  @default("PENDING") // PENDING, RECONCILED, DIVERGENT
+  dueDate              DateTime?
+  paymentDate          DateTime?
+  receiptDate          DateTime?
+  documentNumber       String?
+  bankReference        String?
+  amountOriginal       Decimal? @db.Decimal(15, 2)
+  amountPaid           Decimal? @db.Decimal(15, 2)
+  amountReceived       Decimal? @db.Decimal(15, 2)
+  discount             Decimal? @db.Decimal(15, 2)
+  interest             Decimal? @db.Decimal(15, 2)
+  counterpartyId       String?
+  notes                String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  transaction  Transaction  @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  counterparty Counterparty? @relation(fields: [counterpartyId], references: [id])
+
+  @@index([reconciliationStatus])
+  @@index([counterpartyId])
 }
 
-enum TransactionSource {
-  MANUAL
-  UPLOAD
-  OCR
-  BANK_SYNC
-}
+// ============================================
+// DOCUMENTOS FISCAIS
+// ============================================
+model Document {
+  id             String   @id @default(cuid())
+  companyId      String
+  number         String
+  type           String   // NF, NFS, RECEIPT, INVOICE, CONTRACT, STATEMENT, OTHER
+  description    String?
+  amount         Decimal? @db.Decimal(15, 2)
+  issueDate      DateTime?
+  dueDate        DateTime?
+  status         String   @default("ACTIVE") // ACTIVE, CANCELLED, EXPIRED
+  counterpartyId String?
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-enum ReconciliationConfirmStatus {
-  SUGGESTED
-  CONFIRMED
-  REJECTED
+  company      Company       @relation(fields: [companyId], references: [id])
+  counterparty Counterparty? @relation(fields: [counterpartyId], references: [id])
+
+  @@index([companyId])
+  @@index([companyId, type])
+  @@index([counterpartyId])
 }
 
 // ============================================
@@ -230,7 +295,7 @@ enum AiInteractionType {
   EXPLANATION
   CHAT
   ANALYSIS
-  COST_CLASSIFICATION // NOVO: tipo de interação para classificação de custos
+  COST_CLASSIFICATION
 }
 
 // ============================================
@@ -276,214 +341,3 @@ model Alert {
   @@index([companyId, isDismissed])
   @@index([dataHash])
 }
-// =============================================
-// NOVOS MODELOS - MVP v2 Conciliação
-// Adicionar ao final do schema.prisma existente
-// =============================================
-
-// =============================================
-// CONTRAPARTES (Fornecedores/Clientes)
-// =============================================
-model Counterparty {
-  id          String   @id @default(cuid())
-  companyId   String
-  name        String
-  document    String?  // CNPJ ou CPF
-  type        CounterpartyType @default(SUPPLIER)
-  email       String?
-  phone       String?
-  notes       String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  avgDaysToPay      Decimal?  @db.Decimal(10, 2)  // NOVO
-  avgDaysToReceive  Decimal?  @db.Decimal(10, 2)  // NOVO
-  latePaymentCount  Int       @default(0)          // NOVO
-  totalTransactions Int       @default(0)          // NOVO
-  reliabilityScore  Decimal?  @db.Decimal(3, 2)    // NOVO
-  transactions      Transaction[]                  // NOVO - relação reversa
-
-  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  transactionDetails TransactionDetail[]
-  documents   Document[]
-  aiInsights    AiInsight[]    // ← ADICIONAR ESTA LINHA
-
-  @@index([companyId])
-  @@index([companyId, type])
-  @@index([document])
-}
-
-enum CounterpartyType {
-  SUPPLIER
-  CLIENT
-  BOTH
-}
-
-// =============================================
-// DETALHES DE TRANSAÇÃO (para conciliação)
-// =============================================
-model TransactionDetail {
-  id                   String               @id @default(cuid())
-  transactionId        String
-  counterpartyId       String?
-  reconciliationStatus ReconciliationStatus @default(PENDING)
-  dueDate              DateTime?
-  paymentDate          DateTime?
-  documentNumber       String?
-  bankReference        String?
-  notes                String?
-  reconciledBy         String?              // userId de quem conciliou
-  reconciledAt         DateTime?
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
-  receiptDate    DateTime?                         // NOVO
-  amountOriginal Decimal?  @db.Decimal(15, 2)      // NOVO
-  amountPaid     Decimal?  @db.Decimal(15, 2)      // NOVO
-  amountReceived Decimal?  @db.Decimal(15, 2)      // NOVO
-  discount       Decimal?  @db.Decimal(15, 2)      // NOVO
-  interest       Decimal?  @db.Decimal(15, 2)      // NOVO
-
-  transaction    Transaction   @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-  counterparty   Counterparty? @relation(fields: [counterpartyId], references: [id])
-  reconciliation Reconciliation?
-
-  @@unique([transactionId])
-  @@index([reconciliationStatus])
-  @@index([counterpartyId])
-  @@index([dueDate])
-}
-
-enum ReconciliationStatus {
-  PENDING
-  RECONCILED
-  DIVERGENT
-  PARTIAL
-}
-
-// =============================================
-// DOCUMENTOS FISCAIS
-// =============================================
-model Document {
-  id              String       @id @default(cuid())
-  companyId       String
-  counterpartyId  String?
-  type            DocumentType
-  number          String
-  issueDate       DateTime
-  amount          Decimal      @db.Decimal(15, 2)
-  description     String?
-  fileUrl         String?
-  status          DocumentStatus @default(ACTIVE)
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
-  fileName              String?                    // NOVO
-  fileType              String?                    // NOVO
-  fileSize              Int?                       // NOVO
-  extractedData         Json?                      // NOVO
-  extractionConfidence  Decimal?  @db.Decimal(3, 2) // NOVO
-  transactionDocuments  Transaction[] @relation("TransactionDocument") // NOVO
-
-  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  counterparty Counterparty? @relation(fields: [counterpartyId], references: [id])
-  reconciliation Reconciliation?
-
-  @@index([companyId])
-  @@index([companyId, type])
-  @@index([counterpartyId])
-  @@index([number])
-}
-
-enum DocumentType {
-  INVOICE
-  RECEIPT
-  BANK_STATEMENT
-  CONTRACT
-  OTHER
-}
-
-enum DocumentStatus {
-  ACTIVE
-  CANCELLED
-  ARCHIVED
-}
-
-// =============================================
-// CONCILIAÇÃO
-// =============================================
-model Reconciliation {
-  id                  String   @id @default(cuid())
-  companyId           String
-  transactionDetailId String   @unique
-  documentId          String?  @unique
-  method              ReconciliationMethod @default(MANUAL)
-  confidence          Decimal? @db.Decimal(3, 2)
-  notes               String?
-  reconciledBy        String   // userId
-  createdAt           DateTime @default(now())
-  status                ReconciliationConfirmStatus @default(CONFIRMED) // NOVO
-  proofDescription      String?                    // NOVO
-  proofDocumentId       String?                    // NOVO
-  bankAccountId         String?                    // NOVO
-  bankTransactionRef    String?                    // NOVO
-  bankTransactionDate   DateTime?                  // NOVO
-  bankTransactionAmount Decimal?  @db.Decimal(15, 2) // NOVO
-
-  company           Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  transactionDetail TransactionDetail @relation(fields: [transactionDetailId], references: [id], onDelete: Cascade)
-  document          Document?         @relation(fields: [documentId], references: [id])
-
-  @@index([companyId])
-  @@index([companyId, createdAt])
-}
-
-enum ReconciliationMethod {
-  MANUAL
-  AUTO_EXACT
-  AUTO_FUZZY
-  AI_SUGGESTED
-}
-
-// =============================================
-// NOVO MODEL: AiInsight
-// Adicionar ao final do schema.prisma
-// =============================================
-model AiInsight {
-  id                     String    @id @default(cuid())
-  companyId              String
-  insightType            String    // late_payment_pattern, cash_flow_risk, etc
-  severity               String    @default("MEDIUM")
-  title                  String
-  description            String?
-  recommendation         String?
-  relatedTransactionIds  String[]  @default([])
-  relatedCounterpartyId  String?
-  metadata               Json?     @default("{}")
-  potentialImpact        Decimal?  @db.Decimal(15, 2)
-  potentialSavings       Decimal?  @db.Decimal(15, 2)
-  isRead                 Boolean   @default(false)
-  isDismissed            Boolean   @default(false)
-  readAt                 DateTime?
-  actedAt                DateTime?
-  expiresAt              DateTime?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
-
-  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  counterparty Counterparty? @relation(fields: [relatedCounterpartyId], references: [id])
-
-  @@index([companyId])
-  @@index([companyId, isDismissed])
-  @@index([insightType])
-  @@index([createdAt])
-}
-
-// =============================================
-// RELAÇÕES A ADICIONAR NOS MODELOS EXISTENTES
-// =============================================
-// No model Company, adicionar:
-//   counterparties  Counterparty[]
-//   documents       Document[]
-//   reconciliations Reconciliation[]
-//
-// No model Transaction, adicionar:
-//   detail TransactionDetail?

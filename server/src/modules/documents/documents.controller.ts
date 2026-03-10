@@ -1,241 +1,178 @@
 import { Router, Request, Response, NextFunction } from "express";
-import { authMiddleware } from "../auth/auth.middleware.js";
 import { prisma } from "../../shared/database.js";
-import { z } from "zod";
+import { authMiddleware } from "../auth/auth.middleware.js";
 
 const router = Router();
+router.use(authMiddleware);
 
-// =============================================
-// GET /api/documents — Listar documentos
-// =============================================
-router.get("/", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+// ============================================
+// GET /api/documents — Listar documentos fiscais
+// ============================================
+router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const companyId = (req as any).companyId;
-    const {
-      page = "1",
-      limit = "20",
-      type,
-      status,
-      counterpartyId,
-      search,
-      startDate,
-      endDate,
-      sortBy = "issueDate",
-      sortOrder = "desc",
-    } = req.query as Record<string, string>;
+    const userId = (req as any).userId;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true },
+    });
 
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
-    const skip = (pageNum - 1) * limitNum;
+    if (!user?.companyId) {
+      return res.status(400).json({ success: false, error: "Empresa não encontrada" });
+    }
 
+    const companyId = user.companyId;
     const where: any = { companyId };
 
-    if (type && ["INVOICE", "RECEIPT", "BANK_STATEMENT", "CONTRACT", "OTHER"].includes(type)) {
-      where.type = type;
+    if (req.query.type) {
+      where.type = req.query.type;
     }
-
-    if (status && ["ACTIVE", "CANCELLED", "ARCHIVED"].includes(status)) {
-      where.status = status;
+    if (req.query.status) {
+      where.status = req.query.status;
     }
-
-    if (counterpartyId) {
-      where.counterpartyId = counterpartyId;
-    }
-
-    if (search) {
+    if (req.query.search) {
       where.OR = [
-        { number: { contains: search, mode: "insensitive" } },
-        { description: { contains: search, mode: "insensitive" } },
+        { number: { contains: req.query.search as string, mode: "insensitive" } },
+        { description: { contains: req.query.search as string, mode: "insensitive" } },
       ];
     }
 
-    if (startDate || endDate) {
-      where.issueDate = {};
-      if (startDate) where.issueDate.gte = new Date(startDate);
-      if (endDate) where.issueDate.lte = new Date(endDate);
-    }
-
-    const orderBy: any = {};
-    const validFields = ["issueDate", "amount", "number", "createdAt"];
-    const field = validFields.includes(sortBy) ? sortBy : "issueDate";
-    orderBy[field] = sortOrder === "asc" ? "asc" : "desc";
-
-    const [documents, total] = await Promise.all([
-      prisma.document.findMany({
-        where,
-        include: {
-          counterparty: { select: { id: true, name: true } },
-          reconciliation: { select: { id: true, method: true, createdAt: true } },
-        },
-        orderBy,
-        skip,
-        take: limitNum,
-      }),
-      prisma.document.count({ where }),
-    ]);
-
-    res.json({
-      success: true,
-      data: documents,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total,
-        totalPages: Math.ceil(total / limitNum),
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// =============================================
-// GET /api/documents/:id — Detalhes do documento
-// =============================================
-router.get("/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const companyId = (req as any).companyId;
-    const { id } = req.params;
-
-    const document = await prisma.document.findFirst({
-      where: { id, companyId },
+    const documents = await prisma.document.findMany({
+      where,
       include: {
-        counterparty: true,
-        reconciliation: {
-          include: {
-            transactionDetail: {
-              include: { transaction: true },
-            },
-          },
-        },
+        counterparty: { select: { id: true, name: true } },
       },
+      orderBy: { createdAt: "desc" },
     });
 
-    if (!document) {
-      return res.status(404).json({ success: false, error: "Documento não encontrado" });
-    }
-
-    res.json({ success: true, data: document });
+    return res.json({ success: true, data: documents });
   } catch (error) {
     next(error);
   }
 });
 
-// =============================================
-// POST /api/documents — Criar documento
-// =============================================
-const createSchema = z.object({
-  counterpartyId: z.string().optional(),
-  type: z.enum(["INVOICE", "RECEIPT", "BANK_STATEMENT", "CONTRACT", "OTHER"]),
-  number: z.string().min(1),
-  issueDate: z.string(),
-  amount: z.number(),
-  description: z.string().optional(),
-  fileUrl: z.string().optional(),
-  fileName: z.string().optional(),
-  fileType: z.string().optional(),
-  fileSize: z.number().optional(),
-});
-
-router.post("/", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+// ============================================
+// POST /api/documents — Criar documento fiscal
+// ============================================
+router.post("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const companyId = (req as any).companyId;
-    const data = createSchema.parse(req.body);
+    const userId = (req as any).userId;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true },
+    });
+
+    if (!user?.companyId) {
+      return res.status(400).json({ success: false, error: "Empresa não encontrada" });
+    }
+
+    const { number, type, description, amount, issueDate, dueDate, counterpartyId, notes } = req.body;
+
+    if (!number || !type) {
+      return res.status(400).json({ success: false, error: "Número e tipo são obrigatórios" });
+    }
 
     const document = await prisma.document.create({
       data: {
-        companyId,
-        counterpartyId: data.counterpartyId || null,
-        type: data.type,
-        number: data.number,
-        issueDate: new Date(data.issueDate),
-        amount: data.amount,
-        description: data.description,
-        fileUrl: data.fileUrl,
-        fileName: data.fileName,
-        fileType: data.fileType,
-        fileSize: data.fileSize,
+        companyId: user.companyId,
+        number,
+        type,
+        description: description || null,
+        amount: amount || null,
+        issueDate: issueDate ? new Date(issueDate) : null,
+        dueDate: dueDate ? new Date(dueDate) : null,
+        counterpartyId: counterpartyId || null,
+        notes: notes || null,
       },
       include: {
         counterparty: { select: { id: true, name: true } },
       },
     });
 
-    res.status(201).json({ success: true, data: document });
+    return res.status(201).json({ success: true, data: document });
   } catch (error) {
     next(error);
   }
 });
 
-// =============================================
-// PATCH /api/documents/:id — Atualizar documento
-// =============================================
-const updateSchema = z.object({
-  counterpartyId: z.string().nullable().optional(),
-  type: z.enum(["INVOICE", "RECEIPT", "BANK_STATEMENT", "CONTRACT", "OTHER"]).optional(),
-  number: z.string().optional(),
-  issueDate: z.string().optional(),
-  amount: z.number().optional(),
-  description: z.string().optional(),
-  fileUrl: z.string().optional(),
-  status: z.enum(["ACTIVE", "CANCELLED", "ARCHIVED"]).optional(),
-  extractedData: z.any().optional(),
-  extractionConfidence: z.number().optional(),
-});
-
-router.patch("/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+// ============================================
+// PUT /api/documents/:id — Atualizar documento fiscal
+// ============================================
+router.put("/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const companyId = (req as any).companyId;
+    const userId = (req as any).userId;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true },
+    });
+
+    if (!user?.companyId) {
+      return res.status(400).json({ success: false, error: "Empresa não encontrada" });
+    }
+
     const { id } = req.params;
-    const data = updateSchema.parse(req.body);
 
     const existing = await prisma.document.findFirst({
-      where: { id, companyId },
+      where: { id, companyId: user.companyId },
     });
 
     if (!existing) {
       return res.status(404).json({ success: false, error: "Documento não encontrado" });
     }
 
-    const updateData: any = { ...data };
-    if (data.issueDate) updateData.issueDate = new Date(data.issueDate);
+    const { number, type, description, amount, issueDate, dueDate, counterpartyId, notes, status } = req.body;
 
     const updated = await prisma.document.update({
       where: { id },
-      data: updateData,
+      data: {
+        ...(number !== undefined && { number }),
+        ...(type !== undefined && { type }),
+        ...(description !== undefined && { description }),
+        ...(amount !== undefined && { amount }),
+        ...(issueDate !== undefined && { issueDate: issueDate ? new Date(issueDate) : null }),
+        ...(dueDate !== undefined && { dueDate: dueDate ? new Date(dueDate) : null }),
+        ...(counterpartyId !== undefined && { counterpartyId: counterpartyId || null }),
+        ...(notes !== undefined && { notes }),
+        ...(status !== undefined && { status }),
+      },
       include: {
         counterparty: { select: { id: true, name: true } },
       },
     });
 
-    res.json({ success: true, data: updated });
+    return res.json({ success: true, data: updated });
   } catch (error) {
     next(error);
   }
 });
 
-// =============================================
-// DELETE /api/documents/:id — Arquivar documento
-// =============================================
-router.delete("/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+// ============================================
+// DELETE /api/documents/:id — Remover documento fiscal
+// ============================================
+router.delete("/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const companyId = (req as any).companyId;
+    const userId = (req as any).userId;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true },
+    });
+
+    if (!user?.companyId) {
+      return res.status(400).json({ success: false, error: "Empresa não encontrada" });
+    }
+
     const { id } = req.params;
 
     const existing = await prisma.document.findFirst({
-      where: { id, companyId },
+      where: { id, companyId: user.companyId },
     });
 
     if (!existing) {
       return res.status(404).json({ success: false, error: "Documento não encontrado" });
     }
 
-    await prisma.document.update({
-      where: { id },
-      data: { status: "ARCHIVED" },
-    });
+    await prisma.document.delete({ where: { id } });
 
-    res.json({ success: true, message: "Documento arquivado" });
+    return res.json({ success: true, message: "Documento removido" });
   } catch (error) {
     next(error);
   }
