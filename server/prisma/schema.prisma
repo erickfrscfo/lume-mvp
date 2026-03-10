@@ -125,6 +125,7 @@ model Counterparty {
   type              CounterpartyType @default(SUPPLIER)
   email             String?
   phone             String?
+  address           String?
   notes             String?
   isActive          Boolean          @default(true)
   createdAt         DateTime         @default(now())
@@ -268,19 +269,24 @@ enum ReconciliationConfirmStatus {
 // DOCUMENTOS FISCAIS
 // ============================================
 model Document {
-  id             String         @id @default(cuid())
-  companyId      String
-  number         String
-  type           DocumentType   @default(OTHER)
-  description    String?
-  amount         Decimal?       @db.Decimal(15, 2)
-  issueDate      DateTime?
-  dueDate        DateTime?
-  status         DocumentStatus @default(ACTIVE)
-  counterpartyId String?
-  notes          String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  id                    String         @id @default(cuid())
+  companyId             String
+  number                String
+  type                  DocumentType   @default(OTHER)
+  description           String?
+  amount                Decimal?       @db.Decimal(15, 2)
+  issueDate             DateTime?
+  dueDate               DateTime?
+  status                DocumentStatus @default(ACTIVE)
+  counterpartyId        String?
+  notes                 String?
+  fileName              String?
+  fileType              String?
+  fileSize              Int?
+  extractedData         Json?
+  extractionConfidence  Float?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 
   company      Company       @relation(fields: [companyId], references: [id])
   counterparty Counterparty? @relation(fields: [counterpartyId], references: [id])

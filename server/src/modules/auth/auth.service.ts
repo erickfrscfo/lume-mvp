@@ -3,6 +3,9 @@ import jwt, { Secret, SignOptions } from "jsonwebtoken";
 import { prisma } from "../../shared/database.js";
 import { env } from "../../config/env.js";
 import { AppError, UnauthorizedError } from "../../shared/errors.js";
+import { CompanySector } from "@prisma/client";
+
+const VALID_SECTORS: CompanySector[] = ["VAREJO", "SERVICOS", "INDUSTRIA", "SAAS", "MISTO"];
 
 interface RegisterInput {
   name: string;
@@ -68,7 +71,9 @@ export async function register(input: RegisterInput) {
       data: {
         name: input.company.name,
         cnpj: input.company.cnpj,
-        sector: input.company.sector,
+        sector: (VALID_SECTORS.includes(input.company.sector as CompanySector)
+          ? input.company.sector
+          : "MISTO") as CompanySector,
         code: companyCode,
       },
     });
