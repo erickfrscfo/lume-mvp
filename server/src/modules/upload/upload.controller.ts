@@ -24,9 +24,10 @@ const upload = multer({
 });
 
 // =============================================
-// POST /api/upload/csv — Upload CSV com 9 colunas
-// Colunas aceitas: data, descricao, valor, tipo, status,
-//   contraparte, vencimento, documento, observacao
+// POST /api/upload/csv — Upload CSV com 10 colunas
+// Colunas aceitas: data, descricao, valor, tipo, contraparte,
+//   vencimento, data_pagamento, data_recebimento, documento, observacao
+// Status é derivado: se data_pagamento/data_recebimento preenchida = COMPLETED, senão = PENDING
 // =============================================
 router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -77,7 +78,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
       select: { id: true, name: true, document: true },
     });
 
-    // Validar e processar registros (9 colunas)
+    // Validar e processar registros (10 colunas)
     const errors: Array<{ line: number; error: string }> = [];
     const validTransactions: Array<{
       date: Date;
@@ -88,6 +89,8 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
       counterpartyId?: string;
       counterpartyName?: string;
       dueDate?: Date;
+      paymentDate?: Date;
+      receiptDate?: Date;
       documentNumber?: string;
       notes?: string;
     }> = [];
@@ -149,21 +152,57 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
       }
       const tipo_transacao = (tipoStr === "ENTRADA" || tipoStr === "INCOME") ? "INCOME" : "EXPENSE";
 
-      // 5. STATUS (opcional — default PENDING)
-      let statusStr = (record.status || record.Status || record.STATUS || "").toUpperCase();
-      const validStatuses = ["PENDING", "COMPLETED", "OVERDUE", "PARTIAL", "PENDENTE", "PAGO", "RECEBIDO", "VENCIDO", "PARCIAL"];
-      if (statusStr && !validStatuses.includes(statusStr)) {
-        statusStr = "PENDING";
+      // 5. DATA DE PAGAMENTO (opcional — para SAIDA)
+      const pagamentoStr = record.data_pagamento || record.Data_Pagamento || record.DATA_PAGAMENTO ||
+        record.dataPagamento || record.pagamento || record.Pagamento || "";
+      let paymentDate: Date | undefined;
+      if (pagamentoStr) {
+        if (pagamentoStr.includes("/")) {
+          const parts = pagamentoStr.split("/");
+          paymentDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        } else {
+          paymentDate = new Date(pagamentoStr);
+        }
+        if (isNaN(paymentDate.getTime())) paymentDate = undefined;
       }
-      // Mapear status em português
-      const statusMap: Record<string, string> = {
-        PENDENTE: "PENDING",
-        PAGO: "COMPLETED",
-        RECEBIDO: "COMPLETED",
-        VENCIDO: "OVERDUE",
-        PARCIAL: "PARTIAL",
-      };
-      const status = statusMap[statusStr] || statusStr || "PENDING";
+
+      // 5b. DATA DE RECEBIMENTO (opcional — para ENTRADA)
+      const recebimentoStr = record.data_recebimento || record.Data_Recebimento || record.DATA_RECEBIMENTO ||
+        record.dataRecebimento || record.recebimento || record.Recebimento || "";
+      let receiptDate: Date | undefined;
+      if (recebimentoStr) {
+        if (recebimentoStr.includes("/")) {
+          const parts = recebimentoStr.split("/");
+          receiptDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        } else {
+          receiptDate = new Date(recebimentoStr);
+        }
+        if (isNaN(receiptDate.getTime())) receiptDate = undefined;
+      }
+
+      // STATUS DERIVADO: se data de pagamento/recebimento preenchida = COMPLETED, senão = PENDING
+      // Também aceita coluna status legada para retrocompatibilidade
+      let status = "PENDING";
+      if (tipo_transacao === "EXPENSE" && paymentDate) {
+        status = "COMPLETED";
+      } else if (tipo_transacao === "INCOME" && receiptDate) {
+        status = "COMPLETED";
+      } else {
+        // Retrocompatibilidade: aceitar coluna status se existir
+        const statusStr = (record.status || record.Status || record.STATUS || "").toUpperCase();
+        const statusMap: Record<string, string> = {
+          PENDENTE: "PENDING", PAGO: "COMPLETED", RECEBIDO: "COMPLETED",
+          VENCIDO: "OVERDUE", PARCIAL: "PARTIAL",
+        };
+        if (statusStr) {
+          status = statusMap[statusStr] || statusStr;
+          // Se status legado diz PAGO/RECEBIDO mas sem data, preencher com data da transação
+          if (status === "COMPLETED") {
+            if (tipo_transacao === "EXPENSE" && !paymentDate) paymentDate = date;
+            if (tipo_transacao === "INCOME" && !receiptDate) receiptDate = date;
+          }
+        }
+      }
 
       // 6. CONTRAPARTE (opcional — busca por nome ou CNPJ/CPF)
       const counterpartyStr = record.contraparte || record.Contraparte || record.CONTRAPARTE ||
@@ -213,6 +252,8 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         counterpartyId,
         counterpartyName,
         dueDate,
+        paymentDate,
+        receiptDate,
         documentNumber: documentNumber || undefined,
         notes: notes || undefined,
       });
@@ -263,18 +304,18 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           },
         });
 
-        // Criar detalhe se tiver dados extras
-        if (t.dueDate || t.documentNumber || cpId) {
-          await prisma.transactionDetail.create({
-            data: {
-              transactionId: transaction.id,
-              counterpartyId: cpId,
-              dueDate: t.dueDate,
-              documentNumber: t.documentNumber,
-              amountOriginal: t.amount,
-            },
-          });
-        }
+        // Criar detalhe — sempre criar para manter paymentDate/receiptDate
+        await prisma.transactionDetail.create({
+          data: {
+            transactionId: transaction.id,
+            counterpartyId: cpId,
+            dueDate: t.dueDate,
+            paymentDate: t.paymentDate,
+            receiptDate: t.receiptDate,
+            documentNumber: t.documentNumber,
+            amountOriginal: t.amount,
+          },
+        });
 
         createdCount++;
       } catch (txError: any) {
@@ -441,16 +482,16 @@ router.get("/history", authMiddleware, async (req: Request, res: Response, next:
 // GET /api/upload/template — Download template CSV
 // =============================================
 router.get("/template", authMiddleware, (_req: Request, res: Response) => {
-  const header = "data;descricao;valor;tipo;status;contraparte;vencimento;documento;observacao";
-  const example1 = "01/01/2025;Pagamento Aluguel;-3500.00;SAIDA;PAGO;Imobiliária Central;05/01/2025;NF-001;Aluguel sede";
-  const example2 = "05/01/2025;Recebimento Cliente ABC;12000.00;ENTRADA;RECEBIDO;ABC Tecnologia;10/01/2025;NF-100;Projeto web";
-  const example3 = "10/01/2025;Compra Material;-850.50;SAIDA;PENDENTE;Papelaria Express;15/01/2025;;Material escritório";
-  const example4 = "15/01/2025;Consultoria Mensal;8000.00;ENTRADA;PENDENTE;XYZ Corp;20/01/2025;NF-200;";
+  const header = "data;descricao;valor;tipo;contraparte;vencimento;data_pagamento;data_recebimento;documento;observacao";
+  const example1 = "01/01/2025;Pagamento Aluguel;-3500.00;SAIDA;Imobiliária Central;05/01/2025;03/01/2025;;NF-001;Aluguel sede";
+  const example2 = "05/01/2025;Recebimento Cliente ABC;12000.00;ENTRADA;ABC Tecnologia;10/01/2025;;08/01/2025;NF-100;Projeto web";
+  const example3 = "10/01/2025;Compra Material;-850.50;SAIDA;Papelaria Express;15/01/2025;;;NF-050;Material escritório";
+  const example4 = "15/01/2025;Consultoria Mensal;8000.00;ENTRADA;XYZ Corp;20/01/2025;;;;Aguardando pagamento";
 
   const csv = [header, example1, example2, example3, example4].join("\n");
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", "attachment; filename=template_transacoes_v2.csv");
+  res.setHeader("Content-Disposition", "attachment; filename=template_transacoes_v3.csv");
   res.send("\uFEFF" + csv); // BOM para Excel
 });
 

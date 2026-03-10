@@ -321,10 +321,20 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
 router.post("/transactions", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
-    const { date, description, amount, type, notes } = req.body;
+    const { date, description, amount, type, notes, counterpartyId, dueDate, paymentDate, receiptDate, documentNumber } = req.body;
 
     if (!date || !description || !amount || !type) {
       return res.status(400).json({ success: false, error: "Campos obrigatórios: date, description, amount, type" });
+    }
+
+    const tipo_transacao = (type === "INCOME" || type === "ENTRADA") ? "INCOME" : "EXPENSE";
+
+    // Status derivado de paymentDate/receiptDate
+    let status = "PENDING";
+    if (tipo_transacao === "EXPENSE" && paymentDate) {
+      status = "COMPLETED";
+    } else if (tipo_transacao === "INCOME" && receiptDate) {
+      status = "COMPLETED";
     }
 
     const transaction = await prisma.transaction.create({
@@ -333,8 +343,24 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
         date: new Date(date),
         description,
         amount: Math.abs(parseFloat(amount)),
-        tipo_transacao: type === "INCOME" || type === "ENTRADA" ? "INCOME" : "EXPENSE",
+        tipo_transacao,
+        status: status as any,
+        source: "MANUAL",
+        counterpartyId: counterpartyId || null,
         notes: notes || "",
+      },
+    });
+
+    // Criar TransactionDetail para armazenar datas financeiras
+    await prisma.transactionDetail.create({
+      data: {
+        transactionId: transaction.id,
+        counterpartyId: counterpartyId || null,
+        dueDate: dueDate ? new Date(dueDate) : null,
+        paymentDate: paymentDate ? new Date(paymentDate) : null,
+        receiptDate: receiptDate ? new Date(receiptDate) : null,
+        documentNumber: documentNumber || null,
+        amountOriginal: Math.abs(parseFloat(amount)),
       },
     });
 
@@ -403,11 +429,18 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
     if (notes !== undefined) txUpdateData.notes = notes;
     if (counterpartyId !== undefined) txUpdateData.counterpartyId = counterpartyId || null;
 
-    // Determinar status baseado nos campos
-    if (paymentDate || receiptDate) {
-      txUpdateData.status = "COMPLETED";
-    } else if (dueDate && new Date(dueDate) < new Date() && !paymentDate && !receiptDate) {
-      txUpdateData.status = "OVERDUE";
+    // Status derivado: se paymentDate/receiptDate preenchido = COMPLETED, senão = PENDING
+    if (paymentDate !== undefined || receiptDate !== undefined) {
+      const tipo = transaction.tipo_transacao;
+      const hasPaid = paymentDate !== undefined ? !!paymentDate : false;
+      const hasReceived = receiptDate !== undefined ? !!receiptDate : false;
+
+      if ((tipo === "EXPENSE" && hasPaid) || (tipo === "INCOME" && hasReceived)) {
+        txUpdateData.status = "COMPLETED";
+      } else {
+        // Se removeu a data de pagamento/recebimento, volta para PENDING
+        txUpdateData.status = "PENDING";
+      }
     }
 
     if (Object.keys(txUpdateData).length > 0) {
