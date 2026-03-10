@@ -694,6 +694,339 @@ async function detectCostConcentration(companyId: string): Promise<RawAlert[]> {
 }
 
 // ============================================
+// DETECTOR 8: CONTAS VENCIDAS (OVERDUE PAYMENTS)
+// Alerta quando há contas com dueDate < hoje e sem paymentDate/receiptDate
+// ============================================
+
+async function detectOverduePayments(companyId: string): Promise<RawAlert[]> {
+  const alerts: RawAlert[] = [];
+  const now = new Date();
+
+  // Buscar transações com vencimento passado e sem pagamento/recebimento
+  const overdueTransactions = await prisma.transaction.findMany({
+    where: {
+      companyId,
+      status: { not: 'COMPLETED' },
+      detail: {
+        dueDate: { lt: now },
+        paymentDate: null,
+        receiptDate: null,
+      },
+    },
+    include: {
+      detail: true,
+      counterparty: { select: { name: true } },
+      category: { select: { name: true } },
+    },
+    orderBy: { detail: { dueDate: 'asc' } },
+  });
+
+  if (overdueTransactions.length === 0) return alerts;
+
+  // Agrupar por tipo (despesas a pagar vs receitas a receber)
+  const overduePay = overdueTransactions.filter(t => t.tipo_transacao === 'EXPENSE');
+  const overdueReceive = overdueTransactions.filter(t => t.tipo_transacao === 'INCOME');
+
+  if (overduePay.length > 0) {
+    const totalOverdue = overduePay.reduce((sum, t) => sum + Math.abs(t.amount.toNumber()), 0);
+    const oldestDue = overduePay[0].detail?.dueDate;
+    const daysOverdue = oldestDue ? Math.floor((now.getTime() - oldestDue.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+
+    alerts.push({
+      type: 'OVERDUE_PAYMENTS',
+      severity: totalOverdue > 50000 || daysOverdue > 30 ? 'CRITICAL' : totalOverdue > 10000 || daysOverdue > 15 ? 'HIGH' : 'MEDIUM',
+      title: `${overduePay.length} conta(s) a pagar vencida(s) — total R$ ${Math.round(totalOverdue).toLocaleString('pt-BR')}`,
+      category: 'Contas a Pagar',
+      data: {
+        count: overduePay.length,
+        totalOverdue,
+        oldestDaysOverdue: daysOverdue,
+        items: overduePay.slice(0, 5).map(t => ({
+          description: t.description,
+          counterparty: t.counterparty?.name || 'N/A',
+          amount: Math.abs(t.amount.toNumber()),
+          dueDate: t.detail?.dueDate?.toISOString().split('T')[0],
+          daysOverdue: t.detail?.dueDate ? Math.floor((now.getTime() - t.detail.dueDate.getTime()) / (1000 * 60 * 60 * 24)) : 0,
+        })),
+      },
+    });
+  }
+
+  if (overdueReceive.length > 0) {
+    const totalOverdue = overdueReceive.reduce((sum, t) => sum + Math.abs(t.amount.toNumber()), 0);
+    const oldestDue = overdueReceive[0].detail?.dueDate;
+    const daysOverdue = oldestDue ? Math.floor((now.getTime() - oldestDue.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+
+    alerts.push({
+      type: 'OVERDUE_RECEIVABLES',
+      severity: totalOverdue > 50000 || daysOverdue > 30 ? 'CRITICAL' : totalOverdue > 10000 || daysOverdue > 15 ? 'HIGH' : 'MEDIUM',
+      title: `${overdueReceive.length} recebível(is) vencido(s) — total R$ ${Math.round(totalOverdue).toLocaleString('pt-BR')}`,
+      category: 'Contas a Receber',
+      data: {
+        count: overdueReceive.length,
+        totalOverdue,
+        oldestDaysOverdue: daysOverdue,
+        items: overdueReceive.slice(0, 5).map(t => ({
+          description: t.description,
+          counterparty: t.counterparty?.name || 'N/A',
+          amount: Math.abs(t.amount.toNumber()),
+          dueDate: t.detail?.dueDate?.toISOString().split('T')[0],
+          daysOverdue: t.detail?.dueDate ? Math.floor((now.getTime() - t.detail.dueDate.getTime()) / (1000 * 60 * 60 * 24)) : 0,
+        })),
+      },
+    });
+  }
+
+  return alerts;
+}
+
+// ============================================
+// DETECTOR 9: VENCIMENTOS PRÓXIMOS (UPCOMING DUE DATES)
+// Alerta quando há volume significativo de vencimentos nos próximos 7 dias
+// ============================================
+
+async function detectUpcomingDueDates(companyId: string): Promise<RawAlert[]> {
+  const alerts: RawAlert[] = [];
+  const now = new Date();
+  const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  const upcomingTransactions = await prisma.transaction.findMany({
+    where: {
+      companyId,
+      tipo_transacao: 'EXPENSE',
+      status: { not: 'COMPLETED' },
+      detail: {
+        dueDate: { gte: now, lte: in7Days },
+        paymentDate: null,
+      },
+    },
+    include: {
+      detail: true,
+      counterparty: { select: { name: true } },
+    },
+    orderBy: { detail: { dueDate: 'asc' } },
+  });
+
+  if (upcomingTransactions.length === 0) return alerts;
+
+  const totalAmount = upcomingTransactions.reduce((sum, t) => sum + Math.abs(t.amount.toNumber()), 0);
+
+  // Só alertar se o valor total for relevante (> R$ 5.000)
+  if (totalAmount < 5000) return alerts;
+
+  alerts.push({
+    type: 'UPCOMING_DUE_DATES',
+    severity: totalAmount > 50000 ? 'HIGH' : 'MEDIUM',
+    title: `${upcomingTransactions.length} pagamento(s) vencendo nos próximos 7 dias — R$ ${Math.round(totalAmount).toLocaleString('pt-BR')}`,
+    category: 'Vencimentos',
+    data: {
+      count: upcomingTransactions.length,
+      totalAmount,
+      items: upcomingTransactions.slice(0, 5).map(t => ({
+        description: t.description,
+        counterparty: t.counterparty?.name || 'N/A',
+        amount: Math.abs(t.amount.toNumber()),
+        dueDate: t.detail?.dueDate?.toISOString().split('T')[0],
+      })),
+    },
+  });
+
+  return alerts;
+}
+
+// ============================================
+// DETECTOR 10: PADRÃO DE ATRASOS RECORRENTES
+// Alerta quando fornecedor/cliente tem histórico de pagamentos atrasados
+// ============================================
+
+async function detectLatePaymentPattern(companyId: string): Promise<RawAlert[]> {
+  const alerts: RawAlert[] = [];
+
+  // Buscar contrapartes com latePaymentCount alto
+  const riskyCounterparties = await prisma.counterparty.findMany({
+    where: {
+      companyId,
+      latePaymentCount: { gte: 3 },
+    },
+    select: {
+      id: true,
+      name: true,
+      type: true,
+      latePaymentCount: true,
+      avgDaysToPay: true,
+      avgDaysToReceive: true,
+      reliabilityScore: true,
+    },
+  });
+
+  for (const cp of riskyCounterparties) {
+    // Verificar volume financeiro com essa contraparte (últimos 6 meses)
+    const sixMonthsAgo = addMonths(new Date(), -6);
+    const volume = await prisma.transaction.aggregate({
+      _sum: { amount: true },
+      _count: { id: true },
+      where: {
+        companyId,
+        counterpartyId: cp.id,
+        date: { gte: sixMonthsAgo },
+      },
+    });
+
+    const totalVolume = Math.abs(volume._sum.amount?.toNumber() || 0);
+    if (totalVolume < 3000) continue; // Ignorar contrapartes de baixo volume
+
+    const avgDays = cp.type === 'SUPPLIER'
+      ? cp.avgDaysToPay?.toNumber() || 0
+      : cp.avgDaysToReceive?.toNumber() || 0;
+
+    const reliability = cp.reliabilityScore?.toNumber() || 100;
+
+    alerts.push({
+      type: 'LATE_PAYMENT_PATTERN',
+      severity: cp.latePaymentCount >= 5 || reliability < 50 ? 'HIGH' : 'MEDIUM',
+      title: `${cp.name} — ${cp.latePaymentCount} atrasos registrados`,
+      category: cp.type === 'SUPPLIER' ? 'Fornecedores' : 'Clientes',
+      data: {
+        counterpartyName: cp.name,
+        counterpartyType: cp.type,
+        latePaymentCount: cp.latePaymentCount,
+        avgDaysLate: Math.round(avgDays),
+        reliabilityScore: Math.round(reliability),
+        totalVolume6Months: totalVolume,
+        transactionCount: volume._count.id,
+      },
+    });
+  }
+
+  return alerts;
+}
+
+// ============================================
+// DETECTOR 11: JUROS E MULTAS ACUMULADOS
+// Alerta quando juros/multas por atraso estão acumulando
+// ============================================
+
+async function detectInterestCharges(companyId: string): Promise<RawAlert[]> {
+  const alerts: RawAlert[] = [];
+  const threeMonthsAgo = addMonths(new Date(), -3);
+
+  // Buscar transações com juros registrados nos últimos 3 meses
+  const transactionsWithInterest = await prisma.transactionDetail.findMany({
+    where: {
+      interest: { gt: 0 },
+      transaction: {
+        companyId,
+        date: { gte: threeMonthsAgo },
+      },
+    },
+    include: {
+      transaction: {
+        select: { description: true, amount: true, date: true },
+      },
+    },
+  });
+
+  if (transactionsWithInterest.length === 0) return alerts;
+
+  const totalInterest = transactionsWithInterest.reduce(
+    (sum, td) => sum + (td.interest?.toNumber() || 0), 0
+  );
+
+  if (totalInterest < 100) return alerts; // Ignorar valores insignificantes
+
+  alerts.push({
+    type: 'INTEREST_CHARGES',
+    severity: totalInterest > 5000 ? 'HIGH' : totalInterest > 1000 ? 'MEDIUM' : 'LOW',
+    title: `R$ ${Math.round(totalInterest).toLocaleString('pt-BR')} em juros/multas nos últimos 3 meses`,
+    category: 'Juros e Multas',
+    potentialSavings: totalInterest,
+    data: {
+      totalInterest,
+      transactionCount: transactionsWithInterest.length,
+      items: transactionsWithInterest.slice(0, 5).map(td => ({
+        description: td.transaction.description,
+        amount: Math.abs(td.transaction.amount.toNumber()),
+        interest: td.interest?.toNumber() || 0,
+        date: td.transaction.date.toISOString().split('T')[0],
+      })),
+    },
+  });
+
+  return alerts;
+}
+
+// ============================================
+// DETECTOR 12: GAP DE FLUXO DE CAIXA
+// Alerta quando recebimentos futuros não cobrem pagamentos futuros
+// ============================================
+
+async function detectCashFlowGap(companyId: string): Promise<RawAlert[]> {
+  const alerts: RawAlert[] = [];
+  const now = new Date();
+  const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+  // Pagamentos futuros (despesas com dueDate nos próximos 30 dias, não pagas)
+  const upcomingPayments = await prisma.transaction.aggregate({
+    _sum: { amount: true },
+    _count: { id: true },
+    where: {
+      companyId,
+      tipo_transacao: 'EXPENSE',
+      status: { not: 'COMPLETED' },
+      detail: {
+        dueDate: { gte: now, lte: in30Days },
+        paymentDate: null,
+      },
+    },
+  });
+
+  // Recebimentos futuros (receitas com dueDate nos próximos 30 dias, não recebidas)
+  const upcomingReceivables = await prisma.transaction.aggregate({
+    _sum: { amount: true },
+    _count: { id: true },
+    where: {
+      companyId,
+      tipo_transacao: 'INCOME',
+      status: { not: 'COMPLETED' },
+      detail: {
+        dueDate: { gte: now, lte: in30Days },
+        receiptDate: null,
+      },
+    },
+  });
+
+  const totalPayments = Math.abs(upcomingPayments._sum.amount?.toNumber() || 0);
+  const totalReceivables = upcomingReceivables._sum.amount?.toNumber() || 0;
+
+  // Só alertar se houver pagamentos significativos
+  if (totalPayments < 5000) return alerts;
+
+  const gap = totalReceivables - totalPayments;
+
+  // Gap negativo = mais pagamentos que recebimentos
+  if (gap < 0 && Math.abs(gap) > 5000) {
+    const coverageRatio = totalReceivables > 0 ? (totalReceivables / totalPayments) * 100 : 0;
+
+    alerts.push({
+      type: 'CASH_FLOW_GAP',
+      severity: coverageRatio < 50 ? 'CRITICAL' : coverageRatio < 80 ? 'HIGH' : 'MEDIUM',
+      title: `Gap de caixa de R$ ${Math.round(Math.abs(gap)).toLocaleString('pt-BR')} nos próximos 30 dias`,
+      category: 'Fluxo de Caixa',
+      data: {
+        totalPayments,
+        totalReceivables,
+        gap: Math.round(gap),
+        coverageRatio: Math.round(coverageRatio),
+        paymentCount: upcomingPayments._count.id,
+        receivableCount: upcomingReceivables._count.id,
+      },
+    });
+  }
+
+  return alerts;
+}
+
+// ============================================
 // ORQUESTRADOR
 // ============================================
 
@@ -709,6 +1042,11 @@ export async function detectAllAlerts(companyId: string): Promise<RawAlert[]> {
       expenseOutpacing,
       supplierIncrease,
       costConcentration,
+      overduePayments,
+      upcomingDueDates,
+      latePaymentPattern,
+      interestCharges,
+      cashFlowGap,
     ] = await Promise.allSettled([
       detectExpenseSpikes(companyId),
       detectSmartOpportunities(companyId),
@@ -717,6 +1055,11 @@ export async function detectAllAlerts(companyId: string): Promise<RawAlert[]> {
       detectExpenseOutpacingRevenue(companyId),
       detectSupplierPriceIncrease(companyId),
       detectCostConcentration(companyId),
+      detectOverduePayments(companyId),
+      detectUpcomingDueDates(companyId),
+      detectLatePaymentPattern(companyId),
+      detectInterestCharges(companyId),
+      detectCashFlowGap(companyId),
     ]);
 
     if (spikes.status === 'fulfilled') allAlerts.push(...spikes.value);
@@ -726,6 +1069,11 @@ export async function detectAllAlerts(companyId: string): Promise<RawAlert[]> {
     if (expenseOutpacing.status === 'fulfilled') allAlerts.push(...expenseOutpacing.value);
     if (supplierIncrease.status === 'fulfilled') allAlerts.push(...supplierIncrease.value);
     if (costConcentration.status === 'fulfilled') allAlerts.push(...costConcentration.value);
+    if (overduePayments.status === 'fulfilled') allAlerts.push(...overduePayments.value);
+    if (upcomingDueDates.status === 'fulfilled') allAlerts.push(...upcomingDueDates.value);
+    if (latePaymentPattern.status === 'fulfilled') allAlerts.push(...latePaymentPattern.value);
+    if (interestCharges.status === 'fulfilled') allAlerts.push(...interestCharges.value);
+    if (cashFlowGap.status === 'fulfilled') allAlerts.push(...cashFlowGap.value);
   } catch (error) {
     console.error('[Alerts Detector] Erro ao detectar alertas:', error);
   }
@@ -734,7 +1082,7 @@ export async function detectAllAlerts(companyId: string): Promise<RawAlert[]> {
   const severityOrder = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
   allAlerts.sort((a, b) => (severityOrder[b.severity] || 0) - (severityOrder[a.severity] || 0));
 
-  // Limitar a 10 alertas mais relevantes para não sobrecarregar
-  return allAlerts.slice(0, 10);
+  // Limitar a 15 alertas mais relevantes (aumentado de 10 para comportar novos detectores)
+  return allAlerts.slice(0, 15);
 
 }

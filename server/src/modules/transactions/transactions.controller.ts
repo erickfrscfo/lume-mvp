@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../../shared/database.js";
 import { authMiddleware } from "../auth/auth.middleware.js";
+import { generateAlerts } from "../alerts/alerts.controller.js";
 
 const router = Router();
 router.use(authMiddleware);
@@ -142,6 +143,9 @@ router.patch("/:id/mark-paid", async (req: Request, res: Response, next: NextFun
       },
     });
 
+    // Regenerar alertas em background
+    generateAlerts(user.companyId, userId).catch(err => console.error('[Transactions] Erro ao gerar alertas após mark-paid:', err));
+
     return res.json({ success: true, message: "Transação marcada como paga" });
   } catch (error) {
     next(error);
@@ -194,6 +198,9 @@ router.patch("/:id/mark-received", async (req: Request, res: Response, next: Nex
         reconciliationStatus: "RECONCILED",
       },
     });
+
+    // Regenerar alertas em background
+    generateAlerts(user.companyId, userId).catch(err => console.error('[Transactions] Erro ao gerar alertas após mark-received:', err));
 
     return res.json({ success: true, message: "Transação marcada como recebida" });
   } catch (error) {

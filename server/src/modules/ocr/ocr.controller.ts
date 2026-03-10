@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../../shared/database.js";
 import { Prisma } from "@prisma/client";
 import { authMiddleware } from "../auth/auth.middleware.js";
+import { generateAlerts } from "../alerts/alerts.controller.js";
 import multer from "multer";
 import OpenAI from "openai";
 
@@ -563,6 +564,9 @@ router.post(
       }
 
       console.log(`[OCR Confirm] Transação criada: ${transaction.id} | tipo_custo: ${tipoCusto} | categoria: ${categoryId} | vencimento: ${data_vencimento || 'N/A'}`);
+
+      // Regenerar alertas em background (não bloqueia a resposta)
+      generateAlerts(companyId, userId).catch(err => console.error('[OCR Confirm] Erro ao gerar alertas:', err));
 
       res.json({
         success: true,

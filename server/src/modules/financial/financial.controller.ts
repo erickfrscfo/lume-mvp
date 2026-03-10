@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import { authMiddleware } from "../auth/auth.middleware.js";
 import { prisma } from "../../shared/database.js";
 import { getDREProfile, AVAILABLE_SECTORS } from "../../shared/dre-profiles.js";
+import { generateAlerts } from "../alerts/alerts.controller.js";
 import { z } from "zod";
 
 const router = Router();
@@ -255,7 +256,11 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
     const [transactions, total] = await Promise.all([
       prisma.transaction.findMany({
         where,
-        include: { category: true },
+        include: {
+          category: true,
+          counterparty: { select: { id: true, name: true, document: true, type: true } },
+          detail: true,
+        },
         orderBy: { date: "desc" },
         skip: (page - 1) * limit,
         take: limit,
@@ -271,9 +276,31 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
         description: t.description,
         amount: Number(t.amount),
         tipo_transacao: t.tipo_transacao,
-        tipo_custo: t.tipo_custo, // NOVO: incluir tipo de custo na resposta
-        costConfidence: t.costConfidence ? Number(t.costConfidence) : null, // NOVO
+        tipo_custo: t.tipo_custo,
+        costConfidence: t.costConfidence ? Number(t.costConfidence) : null,
+        status: t.status,
+        source: t.source,
         category: t.category ? { code: t.category.code, name: t.category.name } : null,
+        counterparty: t.counterparty ? {
+          id: t.counterparty.id,
+          name: t.counterparty.name,
+          document: t.counterparty.document,
+          type: t.counterparty.type,
+        } : null,
+        detail: t.detail ? {
+          dueDate: t.detail.dueDate,
+          paymentDate: t.detail.paymentDate,
+          receiptDate: t.detail.receiptDate,
+          amountOriginal: t.detail.amountOriginal ? Number(t.detail.amountOriginal) : null,
+          amountPaid: t.detail.amountPaid ? Number(t.detail.amountPaid) : null,
+          amountReceived: t.detail.amountReceived ? Number(t.detail.amountReceived) : null,
+          discount: t.detail.discount ? Number(t.detail.discount) : null,
+          interest: t.detail.interest ? Number(t.detail.interest) : null,
+          documentNumber: t.detail.documentNumber,
+          bankReference: t.detail.bankReference,
+          reconciliationStatus: t.detail.reconciliationStatus,
+          notes: t.detail.notes,
+        } : null,
         aiClassified: t.aiClassified,
         confidence: t.confidence ? Number(t.confidence) : null,
         notes: t.notes,
@@ -311,6 +338,12 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
       },
     });
 
+    // Regenerar alertas em background
+    const userId = (req as any).userId;
+    if (userId) {
+      generateAlerts(companyId, userId).catch(err => console.error('[Financial] Erro ao gerar alertas após criação:', err));
+    }
+
     res.json({ success: true, data: transaction });
   } catch (error) {
     next(error);
@@ -333,6 +366,109 @@ router.delete("/transactions/:id", authMiddleware, async (req: Request, res: Res
 
     await prisma.transaction.delete({ where: { id } });
     res.json({ success: true, message: "Transação excluída" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================
+// PATCH /api/financial/transactions/:id — Editar transação e detalhes
+// ============================================
+router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const companyId = (req as any).companyId;
+    const { id } = req.params;
+
+    const transaction = await prisma.transaction.findFirst({
+      where: { id, companyId },
+    });
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, error: "Transação não encontrada" });
+    }
+
+    const {
+      date, description, amount, notes, counterpartyId,
+      // Campos do detail
+      dueDate, paymentDate, receiptDate,
+      amountPaid, amountReceived, discount, interest,
+      documentNumber, bankReference, reconciliationNotes,
+    } = req.body;
+
+    // Atualizar campos da transação principal
+    const txUpdateData: any = {};
+    if (date !== undefined) txUpdateData.date = new Date(date);
+    if (description !== undefined) txUpdateData.description = description;
+    if (amount !== undefined) txUpdateData.amount = Math.abs(parseFloat(amount));
+    if (notes !== undefined) txUpdateData.notes = notes;
+    if (counterpartyId !== undefined) txUpdateData.counterpartyId = counterpartyId || null;
+
+    // Determinar status baseado nos campos
+    if (paymentDate || receiptDate) {
+      txUpdateData.status = "COMPLETED";
+    } else if (dueDate && new Date(dueDate) < new Date() && !paymentDate && !receiptDate) {
+      txUpdateData.status = "OVERDUE";
+    }
+
+    if (Object.keys(txUpdateData).length > 0) {
+      await prisma.transaction.update({
+        where: { id },
+        data: txUpdateData,
+      });
+    }
+
+    // Atualizar ou criar detail se algum campo de detail foi enviado
+    const hasDetailFields = dueDate !== undefined || paymentDate !== undefined || receiptDate !== undefined ||
+      amountPaid !== undefined || amountReceived !== undefined || discount !== undefined ||
+      interest !== undefined || documentNumber !== undefined || bankReference !== undefined ||
+      reconciliationNotes !== undefined;
+
+    if (hasDetailFields) {
+      const detailData: any = {};
+      if (dueDate !== undefined) detailData.dueDate = dueDate ? new Date(dueDate) : null;
+      if (paymentDate !== undefined) detailData.paymentDate = paymentDate ? new Date(paymentDate) : null;
+      if (receiptDate !== undefined) detailData.receiptDate = receiptDate ? new Date(receiptDate) : null;
+      if (amountPaid !== undefined) detailData.amountPaid = amountPaid ? parseFloat(amountPaid) : null;
+      if (amountReceived !== undefined) detailData.amountReceived = amountReceived ? parseFloat(amountReceived) : null;
+      if (discount !== undefined) detailData.discount = discount ? parseFloat(discount) : null;
+      if (interest !== undefined) detailData.interest = interest ? parseFloat(interest) : null;
+      if (documentNumber !== undefined) detailData.documentNumber = documentNumber || null;
+      if (bankReference !== undefined) detailData.bankReference = bankReference || null;
+      if (reconciliationNotes !== undefined) detailData.notes = reconciliationNotes || null;
+
+      // Atualizar reconciliationStatus
+      if (paymentDate || receiptDate) {
+        detailData.reconciliationStatus = "RECONCILED";
+      }
+
+      await prisma.transactionDetail.upsert({
+        where: { transactionId: id },
+        create: {
+          transactionId: id,
+          amountOriginal: transaction.amount,
+          ...detailData,
+        },
+        update: detailData,
+      });
+    }
+
+    // Retornar transação atualizada com todos os includes
+    const updated = await prisma.transaction.findUnique({
+      where: { id },
+      include: {
+        category: true,
+        counterparty: { select: { id: true, name: true, document: true, type: true } },
+        detail: true,
+      },
+    });
+
+    // Regenerar alertas em background
+    const patchUserId = (req as any).userId;
+    if (patchUserId) {
+      generateAlerts(companyId, patchUserId).catch(err => console.error('[Financial] Erro ao gerar alertas após edição:', err));
+    }
+
+    res.json({ success: true, data: updated });
   } catch (error) {
     next(error);
   }
