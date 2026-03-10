@@ -430,16 +430,29 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
     if (counterpartyId !== undefined) txUpdateData.counterpartyId = counterpartyId || null;
 
     // Status derivado: se paymentDate/receiptDate preenchido = COMPLETED, senão = PENDING
+    // Sempre recalcular status quando qualquer campo de detalhe é editado
     if (paymentDate !== undefined || receiptDate !== undefined) {
       const tipo = transaction.tipo_transacao;
-      const hasPaid = paymentDate !== undefined ? !!paymentDate : false;
-      const hasReceived = receiptDate !== undefined ? !!receiptDate : false;
+      // Buscar detail existente para verificar valores atuais
+      const existingDetail = await prisma.transactionDetail.findUnique({
+        where: { transactionId: id },
+      });
 
-      if ((tipo === "EXPENSE" && hasPaid) || (tipo === "INCOME" && hasReceived)) {
+      // Usar o valor enviado se definido, senão manter o existente
+      const effectivePaymentDate = paymentDate !== undefined ? paymentDate : existingDetail?.paymentDate;
+      const effectiveReceiptDate = receiptDate !== undefined ? receiptDate : existingDetail?.receiptDate;
+
+      if ((tipo === "EXPENSE" && effectivePaymentDate) || (tipo === "INCOME" && effectiveReceiptDate)) {
         txUpdateData.status = "COMPLETED";
       } else {
         // Se removeu a data de pagamento/recebimento, volta para PENDING
-        txUpdateData.status = "PENDING";
+        // Verificar se está vencido
+        const effectiveDueDate = dueDate !== undefined ? dueDate : existingDetail?.dueDate;
+        if (effectiveDueDate && new Date(effectiveDueDate) < new Date()) {
+          txUpdateData.status = "OVERDUE";
+        } else {
+          txUpdateData.status = "PENDING";
+        }
       }
     }
 
