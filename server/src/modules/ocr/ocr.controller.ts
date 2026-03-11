@@ -58,39 +58,91 @@ function buildExtractionPrompt(tipoTransacao: string): string {
     ? "RECEITA (entrada de dinheiro)"
     : "DESPESA (saída de dinheiro)";
 
-  return `Analise este documento financeiro e extraia as seguintes informações em JSON.
+  return `Você é um especialista em documentos financeiros brasileiros. Analise CUIDADOSAMENTE este documento e extraia os dados em JSON.
 Retorne APENAS o JSON, sem markdown, sem explicações.
 
-CONTEXTO IMPORTANTE: O usuário informou que este documento é uma ${tipoLabel}. Use essa informação como referência para o campo tipo_transacao.
+CONTEXTO: O usuário informou que este documento é uma ${tipoLabel}.
 
-Campos obrigatórios:
+## IDENTIFICAÇÃO DO TIPO DE DOCUMENTO
+Antes de extrair, identifique o tipo:
+- **BOLETO/FATURA**: Tem código de barras, "Vencimento", "Total a Pagar", pode ser conta de luz, água, telefone, internet, etc.
+- **NOTA FISCAL (NF-e/NFS-e)**: Tem "Nota Fiscal", CNPJ de prestador/tomador, discriminação de serviços
+- **RECIBO**: Tem "Recibo", "Recebi de", assinatura
+- **EXTRATO BANCÁRIO**: Lista de transações com datas e saldos
+- **CONTRATO**: Termos, cláusulas, partes contratantes
+
+## CAMPOS A EXTRAIR
 {
   "tipo_documento": "INVOICE" | "RECEIPT" | "BANK_STATEMENT" | "CONTRACT" | "OTHER",
   "fornecedor_ou_cliente": "nome da empresa ou pessoa",
-  "cnpj_cpf": "número do documento (CNPJ ou CPF) ou null",
+  "cnpj_cpf": "número do CNPJ ou CPF formatado (XX.XXX.XXX/XXXX-XX) ou null",
   "valor_total": 0.00,
   "data_emissao": "YYYY-MM-DD" ou null,
   "data_vencimento": "YYYY-MM-DD" ou null,
   "tipo_transacao": "${tipoTransacao}",
-  "descricao": "descrição resumida do documento",
-  "referencia": "número da NF, boleto ou referência" ou null,
+  "descricao": "descrição clara e específica do documento",
+  "referencia": "número da NF, nº da fatura, nº do boleto ou referência" ou null,
   "categoria_sugerida": "nome da categoria contábil mais adequada",
   "tipo_custo": "FIXO" | "VARIAVEL" | null,
   "itens": [
-    { "descricao": "descrição do item", "valor": 0.00 }
+    { "descricao": "descrição do item/serviço", "valor": 0.00 }
   ],
   "confianca": 0.0 a 1.0
 }
 
-Regras:
-- O tipo_transacao já foi definido pelo usuário como "${tipoTransacao}", mantenha esse valor
-- tipo_documento DEVE ser um destes valores exatos: INVOICE, RECEIPT, BANK_STATEMENT, CONTRACT, OTHER
-- Valores devem ser numéricos (sem R$, sem pontos de milhar)
-- Datas no formato YYYY-MM-DD
-- Se não conseguir extrair algum campo, use null
-- O campo confianca indica sua confiança na extração (0.0 = nenhuma, 1.0 = total)
-- categoria_sugerida: sugira a categoria contábil mais adequada (ex: "Despesas com Pessoal", "Despesas Operacionais", "Impostos e Tributos", "Prestação de Serviços", "Receita de Vendas", etc.)
-- tipo_custo: para DESPESAS, classifique como "FIXO" (aluguel, salários, assinaturas, seguros) ou "VARIAVEL" (comissões, matéria-prima, frete, marketing). Para RECEITAS, use null.`;
+## REGRAS CRÍTICAS DE EXTRAÇÃO
+
+### Valor (valor_total)
+- NUNCA retorne 0 ou null para valor_total — procure em TODO o documento
+- Em BOLETOS/FATURAS: procure "Total a Pagar", "Valor a Pagar (R$)", "Valor do Documento", "Total"
+- Em NOTAS FISCAIS: procure "Valor Total do Serviço", "Valor Total da Nota", "Valor Líquido"
+- Converta para número decimal: "R$ 1.234,56" → 1234.56, "119,99" → 119.99
+- Se houver múltiplos valores, use o VALOR TOTAL FINAL (maior valor ou "Total a Pagar")
+
+### Datas
+- NUNCA use a data de hoje como fallback — se não encontrar, use null
+- data_emissao: "Data de Emissão", "Data", "Emitida em", ou mês de referência (ex: "Referência 02/2026" → use o primeiro dia: "2026-02-01")
+- data_vencimento: "Vencimento", "Data de Vencimento", "Vence em" — MUITO IMPORTANTE para boletos
+- Formato de saída: YYYY-MM-DD
+
+### Fornecedor/Cliente
+- Em BOLETOS/FATURAS: o fornecedor é a empresa que EMITE a cobrança (ex: Vivo, CPFL, Sabesp, etc.)
+- Em NOTAS FISCAIS: o fornecedor é o PRESTADOR DE SERVIÇOS
+- Use o nome comercial/razão social completa
+
+### CNPJ/CPF
+- Procure em TODO o documento — geralmente está no cabeçalho, rodapé ou dados do emissor
+- Em BOLETOS: procure "CNPJ" do beneficiário/cedente
+- Em NFs: procure no bloco "PRESTADOR DE SERVIÇOS"
+- Mantenha a formatação: XX.XXX.XXX/XXXX-XX para CNPJ, XXX.XXX.XXX-XX para CPF
+
+### Referência
+- Em BOLETOS: "Nº da Fatura", "Nosso Número", "Nº do Documento"
+- Em NFs: "Número da Nota", "Nº NF"
+
+### Descrição
+- Seja ESPECÍFICO: em vez de "Resumo da conta", use "Fatura Vivo Casa Conectada - Fibra 500 Mbps - Ref. 02/2026"
+- Inclua o tipo de serviço/produto e período de referência quando disponível
+
+### Categoria e Tipo de Custo
+- categoria_sugerida: sugira a categoria contábil mais adequada (ex: "Telecomunicações", "Energia Elétrica", "Despesas com Pessoal", "Prestação de Serviços", "Receita de Vendas", etc.)
+- tipo_custo: para DESPESAS, classifique como "FIXO" (aluguel, salários, assinaturas, contas de consumo recorrentes) ou "VARIAVEL" (comissões, matéria-prima, frete, marketing). Para RECEITAS, use null.
+
+### Tipo de Documento
+- Boletos, faturas de serviço (telefone, internet, energia, água) → "INVOICE"
+- Notas fiscais (NF-e, NFS-e) → "INVOICE"
+- Recibos → "RECEIPT"
+- Extratos bancários → "BANK_STATEMENT"
+- Contratos → "CONTRACT"
+- Outros → "OTHER"
+
+### Confiança
+- 0.9-1.0: todos os campos principais extraídos com certeza
+- 0.7-0.8: maioria dos campos extraídos, alguns inferidos
+- 0.5-0.6: dados parciais, baixa qualidade de imagem
+- Abaixo de 0.5: documento ilegível ou tipo não reconhecido
+
+O tipo_transacao já foi definido pelo usuário como "${tipoTransacao}", mantenha esse valor.`;
 }
 
 // Mapear tipo_documento da IA para o enum DocumentType do Prisma
