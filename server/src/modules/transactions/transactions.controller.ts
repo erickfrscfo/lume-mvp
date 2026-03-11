@@ -127,6 +127,8 @@ router.patch("/:id/mark-paid", async (req: Request, res: Response, next: NextFun
     });
 
     // Criar ou atualizar detalhe
+    // NÃO setar reconciliationStatus aqui — conciliação é feita apenas
+    // via match com extrato bancário (POST /api/reconciliations/batch)
     await prisma.transactionDetail.upsert({
       where: { transactionId: id },
       create: {
@@ -134,12 +136,10 @@ router.patch("/:id/mark-paid", async (req: Request, res: Response, next: NextFun
         paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
         amountPaid: amountPaid || transaction.amount,
         amountOriginal: transaction.amount,
-        reconciliationStatus: "RECONCILED",
       },
       update: {
         paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
         amountPaid: amountPaid || transaction.amount,
-        reconciliationStatus: "RECONCILED",
       },
     });
 
@@ -183,6 +183,8 @@ router.patch("/:id/mark-received", async (req: Request, res: Response, next: Nex
       data: { status: "COMPLETED" },
     });
 
+    // NÃO setar reconciliationStatus aqui — conciliação é feita apenas
+    // via match com extrato bancário (POST /api/reconciliations/batch)
     await prisma.transactionDetail.upsert({
       where: { transactionId: id },
       create: {
@@ -190,12 +192,10 @@ router.patch("/:id/mark-received", async (req: Request, res: Response, next: Nex
         receiptDate: receiptDate ? new Date(receiptDate) : new Date(),
         amountReceived: amountReceived || transaction.amount,
         amountOriginal: transaction.amount,
-        reconciliationStatus: "RECONCILED",
       },
       update: {
         receiptDate: receiptDate ? new Date(receiptDate) : new Date(),
         amountReceived: amountReceived || transaction.amount,
-        reconciliationStatus: "RECONCILED",
       },
     });
 

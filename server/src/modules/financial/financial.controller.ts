@@ -572,9 +572,8 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
       if (bankReference !== undefined) detailData.bankReference = bankReference || null;
       if (reconciliationNotes !== undefined) detailData.notes = reconciliationNotes || null;
 
-      if (paymentDate || receiptDate) {
-        detailData.reconciliationStatus = "RECONCILED";
-      }
+      // NÃO setar reconciliationStatus aqui — conciliação é feita apenas
+      // via match com extrato bancário (POST /api/reconciliations/batch)
 
       await prisma.transactionDetail.upsert({
         where: { transactionId: id },
