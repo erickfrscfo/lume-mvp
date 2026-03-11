@@ -136,6 +136,7 @@ async function detectExpenseSpikes(companyId: string): Promise<RawAlert[]> {
         companyId,
         categoryId: category.id,
         tipo_transacao: TransactionType.EXPENSE,
+        status: 'COMPLETED',
         date: {
           gte: getMonthStart(currentMonth),
           lte: getMonthEnd(currentMonth),
@@ -154,6 +155,7 @@ async function detectExpenseSpikes(companyId: string): Promise<RawAlert[]> {
         companyId,
         categoryId: category.id,
         tipo_transacao: TransactionType.EXPENSE,
+        status: 'COMPLETED',
         date: {
           gte: getMonthStart(addMonths(currentMonth, -3)),
           lt: getMonthStart(currentMonth),
@@ -225,6 +227,7 @@ async function detectSmartOpportunities(companyId: string): Promise<RawAlert[]> 
     where: {
       companyId,
       tipo_transacao: TransactionType.EXPENSE,
+      status: 'COMPLETED',
       date: { gte: sixMonthsAgo },
     },
     _count: { id: true },
@@ -376,6 +379,7 @@ async function detectMarginDecline(companyId: string): Promise<RawAlert[]> {
       where: {
         companyId,
         tipo_transacao: TransactionType.INCOME,
+        status: 'COMPLETED',
         date: {
           gte: getMonthStart(monthDate),
           lte: getMonthEnd(monthDate),
@@ -388,6 +392,7 @@ async function detectMarginDecline(companyId: string): Promise<RawAlert[]> {
       where: {
         companyId,
         tipo_transacao: TransactionType.EXPENSE,
+        status: 'COMPLETED',
         date: {
           gte: getMonthStart(monthDate),
           lte: getMonthEnd(monthDate),
@@ -447,6 +452,7 @@ async function detectRevenueTrend(companyId: string): Promise<RawAlert[]> {
       where: {
         companyId,
         tipo_transacao: TransactionType.INCOME,
+        status: 'COMPLETED',
         date: {
           gte: getMonthStart(monthDate),
           lte: getMonthEnd(monthDate),
@@ -497,6 +503,7 @@ async function detectExpenseOutpacingRevenue(companyId: string): Promise<RawAler
     where: {
       companyId,
       tipo_transacao: TransactionType.INCOME,
+      status: 'COMPLETED',
       date: { gte: getMonthStart(currentMonth), lte: getMonthEnd(currentMonth) },
     },
   });
@@ -506,6 +513,7 @@ async function detectExpenseOutpacingRevenue(companyId: string): Promise<RawAler
     where: {
       companyId,
       tipo_transacao: TransactionType.EXPENSE,
+      status: 'COMPLETED',
       date: { gte: getMonthStart(currentMonth), lte: getMonthEnd(currentMonth) },
     },
   });
@@ -515,6 +523,7 @@ async function detectExpenseOutpacingRevenue(companyId: string): Promise<RawAler
     where: {
       companyId,
       tipo_transacao: TransactionType.INCOME,
+      status: 'COMPLETED',
       date: { gte: getMonthStart(addMonths(currentMonth, -3)), lt: getMonthStart(currentMonth) },
     },
   });
@@ -524,6 +533,7 @@ async function detectExpenseOutpacingRevenue(companyId: string): Promise<RawAler
     where: {
       companyId,
       tipo_transacao: TransactionType.EXPENSE,
+      status: 'COMPLETED',
       date: { gte: getMonthStart(addMonths(currentMonth, -3)), lt: getMonthStart(currentMonth) },
     },
   });
@@ -575,6 +585,7 @@ async function detectSupplierPriceIncrease(companyId: string): Promise<RawAlert[
     where: {
       companyId,
       tipo_transacao: TransactionType.EXPENSE,
+      status: 'COMPLETED',
       date: { gte: getMonthStart(currentMonth), lte: getMonthEnd(currentMonth) },
     },
     _sum: { amount: true },
@@ -593,6 +604,7 @@ async function detectSupplierPriceIncrease(companyId: string): Promise<RawAlert[
         companyId,
         description: current.description,
         tipo_transacao: TransactionType.EXPENSE,
+        status: 'COMPLETED',
         date: { gte: getMonthStart(addMonths(currentMonth, -3)), lt: getMonthStart(currentMonth) },
       },
     });
@@ -647,6 +659,7 @@ async function detectCostConcentration(companyId: string): Promise<RawAlert[]> {
     where: {
       companyId,
       tipo_transacao: TransactionType.EXPENSE,
+      status: 'COMPLETED',
       date: { gte: getMonthStart(currentMonth), lte: getMonthEnd(currentMonth) },
     },
   });
@@ -667,6 +680,7 @@ async function detectCostConcentration(companyId: string): Promise<RawAlert[]> {
         companyId,
         categoryId: category.id,
         tipo_transacao: TransactionType.EXPENSE,
+        status: 'COMPLETED',
         date: { gte: getMonthStart(currentMonth), lte: getMonthEnd(currentMonth) },
       },
     });

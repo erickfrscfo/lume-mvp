@@ -7,41 +7,63 @@ import { z } from "zod";
 
 const router = Router();
 
+// ============================================
+// HELPER: Obter data efetiva de caixa
+// Para EXPENSE: paymentDate (fallback: transaction.date)
+// Para INCOME: receiptDate (fallback: transaction.date)
+// ============================================
+function getEffectiveDate(tx: any): Date {
+  if (tx.tipo_transacao === "EXPENSE") {
+    return tx.detail?.paymentDate || tx.date;
+  } else {
+    return tx.detail?.receiptDate || tx.date;
+  }
+}
+
+function formatMonthKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// ============================================
 // GET /api/financial/dashboard
+// REGIME DE CAIXA: apenas transações COMPLETED, agrupadas por data efetiva
+// Inclui dados de transações pendentes para indicador de UX
+// ============================================
 router.get("/dashboard", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
     const now = new Date();
-    const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1);
 
     // ============================================
-    // SALDO DE CAIXA: usar TODAS as transações (sem filtro de data)
-    // para refletir o saldo real acumulado da empresa
+    // SALDO DE CAIXA: apenas transações COMPLETED (pagas/recebidas)
     // ============================================
-    const allTransactions = await prisma.transaction.findMany({
-      where: { companyId },
+    const completedTransactions = await prisma.transaction.findMany({
+      where: { companyId, status: "COMPLETED" },
+      include: { detail: true },
     });
 
-    const totalIncome = allTransactions.filter((t) => t.tipo_transacao === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
-    const totalExpense = allTransactions.filter((t) => t.tipo_transacao === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
+    const totalIncome = completedTransactions
+      .filter((t) => t.tipo_transacao === "INCOME")
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const totalExpense = completedTransactions
+      .filter((t) => t.tipo_transacao === "EXPENSE")
+      .reduce((s, t) => s + Number(t.amount), 0);
     const cashBalance = totalIncome - totalExpense;
 
-    // Transações dos últimos 6 meses (para burn rate e variação mensal)
-    const transactions = allTransactions.filter((t) => t.date >= sixMonthsAgo);
+    // Filtrar últimos 6 meses usando data efetiva
+    const recentTransactions = completedTransactions.filter((t) => {
+      const effectiveDate = getEffectiveDate(t);
+      return effectiveDate >= sixMonthsAgo;
+    });
 
     // ============================================
-    // BURN RATE CORRIGIDO
-    // Calcula a média mensal de (Despesas - Receitas) usando TODOS os meses com dados,
-    // não apenas o mês atual. Isso garante que funciona mesmo quando o mês atual
-    // ainda não tem transações.
+    // BURN RATE: média mensal usando data efetiva de caixa
     // ============================================
-
-    // Agrupar transações por mês
     const monthlyData: Record<string, { income: number; expense: number }> = {};
-    transactions.forEach((t) => {
-      const monthKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
+    recentTransactions.forEach((t) => {
+      const effectiveDate = getEffectiveDate(t);
+      const monthKey = formatMonthKey(effectiveDate);
       if (!monthlyData[monthKey]) monthlyData[monthKey] = { income: 0, expense: 0 };
       if (t.tipo_transacao === "INCOME") {
         monthlyData[monthKey].income += Number(t.amount);
@@ -53,9 +75,6 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
     const monthKeys = Object.keys(monthlyData).sort();
     const numMonths = monthKeys.length;
 
-    // Net Burn Rate = média mensal de (despesas - receitas)
-    // Se positivo → empresa queima caixa
-    // Se zero ou negativo → empresa gera caixa
     let avgNetBurn = 0;
     if (numMonths > 0) {
       const totalNetBurn = monthKeys.reduce((sum, mk) => {
@@ -67,10 +86,7 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
     const burnRate = avgNetBurn > 0 ? avgNetBurn : 0;
 
     // ============================================
-    // RUNWAY CORRIGIDO
-    // Runway = Saldo Total em Caixa / Net Burn Rate Mensal
-    // Se saldo <= 0 → runway = 0 (sem caixa)
-    // Se burn rate <= 0 → runway = 99 (empresa lucrativa, "infinito")
+    // RUNWAY
     // ============================================
     let runway: number;
     if (cashBalance <= 0) {
@@ -82,7 +98,7 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
       if (runway > 99) runway = 99;
     }
 
-    // Variação do saldo: comparar saldo total com saldo sem o último mês
+    // Variação do saldo
     const lastMonthKey = monthKeys.length > 0 ? monthKeys[monthKeys.length - 1] : null;
     let cashBalanceChange = 0;
     if (lastMonthKey && monthlyData[lastMonthKey]) {
@@ -93,7 +109,7 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
       }
     }
 
-    // Crescimento de receita (último mês com dados vs penúltimo)
+    // Crescimento de receita
     let growth = 0;
     if (monthKeys.length >= 2) {
       const lastMk = monthKeys[monthKeys.length - 1];
@@ -105,6 +121,26 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
       }
     }
 
+    // ============================================
+    // TRANSAÇÕES PENDENTES: indicador de UX
+    // Mostra ao usuário quanto ainda não foi contabilizado no caixa
+    // ============================================
+    const pendingTransactions = await prisma.transaction.findMany({
+      where: {
+        companyId,
+        status: { in: ["PENDING", "OVERDUE"] },
+      },
+      select: { amount: true, tipo_transacao: true, status: true },
+    });
+
+    const pendingExpenses = pendingTransactions
+      .filter((t) => t.tipo_transacao === "EXPENSE")
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const pendingIncomes = pendingTransactions
+      .filter((t) => t.tipo_transacao === "INCOME")
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const overdueCount = pendingTransactions.filter((t) => t.status === "OVERDUE").length;
+
     res.json({
       success: true,
       data: {
@@ -112,7 +148,14 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
         burnRate: { value: burnRate, change: 0 },
         runway: { value: runway, change: 0 },
         growth: { value: growth, change: 0 },
-        transactionCount: transactions.length,
+        transactionCount: completedTransactions.length,
+        // NOVO: dados de transações pendentes
+        pending: {
+          count: pendingTransactions.length,
+          totalExpenses: pendingExpenses,
+          totalIncomes: pendingIncomes,
+          overdueCount,
+        },
       },
     });
   } catch (error) {
@@ -120,7 +163,10 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
   }
 });
 
+// ============================================
 // GET /api/financial/cashflow
+// REGIME DE CAIXA: apenas COMPLETED, agrupado por data efetiva
+// ============================================
 router.get("/cashflow", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
@@ -129,14 +175,17 @@ router.get("/cashflow", authMiddleware, async (req: Request, res: Response, next
     startDate.setMonth(startDate.getMonth() - months);
 
     const transactions = await prisma.transaction.findMany({
-      where: { companyId, date: { gte: startDate } },
-      orderBy: { date: "asc" },
+      where: { companyId, status: "COMPLETED" },
+      include: { detail: true },
     });
 
-    // Agrupar por mês
+    // Filtrar por data efetiva >= startDate e agrupar por mês
     const monthlyMap: Record<string, { income: number; expense: number }> = {};
     transactions.forEach((t) => {
-      const monthKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
+      const effectiveDate = getEffectiveDate(t);
+      if (effectiveDate < startDate) return; // Fora do período
+
+      const monthKey = formatMonthKey(effectiveDate);
       if (!monthlyMap[monthKey]) monthlyMap[monthKey] = { income: 0, expense: 0 };
       if (t.tipo_transacao === "INCOME") {
         monthlyMap[monthKey].income += Number(t.amount);
@@ -160,7 +209,10 @@ router.get("/cashflow", authMiddleware, async (req: Request, res: Response, next
   }
 });
 
+// ============================================
 // GET /api/financial/dre
+// REGIME DE CAIXA: apenas COMPLETED, agrupado por data efetiva
+// ============================================
 router.get("/dre", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
@@ -177,15 +229,17 @@ router.get("/dre", authMiddleware, async (req: Request, res: Response, next: Nex
     const profile = getDREProfile(company?.sector || "MISTO");
 
     const transactions = await prisma.transaction.findMany({
-      where: { companyId, date: { gte: startDate } },
-      include: { category: true },
-      orderBy: { date: "asc" },
+      where: { companyId, status: "COMPLETED" },
+      include: { category: true, detail: true },
     });
 
-    // Agrupar por mês e categoria
+    // Agrupar por mês (data efetiva) e categoria
     const dreData: Record<string, Record<string, number>> = {};
     transactions.forEach((t) => {
-      const monthKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
+      const effectiveDate = getEffectiveDate(t);
+      if (effectiveDate < startDate) return; // Fora do período
+
+      const monthKey = formatMonthKey(effectiveDate);
       const catCode = t.category?.code || "0.0";
       if (!dreData[monthKey]) dreData[monthKey] = {};
       dreData[monthKey][catCode] = (dreData[monthKey][catCode] || 0) + Number(t.amount);
@@ -213,7 +267,10 @@ router.get("/sectors", authMiddleware, async (_req: Request, res: Response) => {
   res.json({ success: true, data: AVAILABLE_SECTORS });
 });
 
+// ============================================
 // GET /api/financial/transactions
+// Adicionados filtros: status, dueDateStart, dueDateEnd
+// ============================================
 router.get("/transactions", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
@@ -222,34 +279,52 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
     const type = req.query.type as string;
     const startDate = req.query.startDate as string;
     const endDate = req.query.endDate as string;
-    const costType = req.query.costType as string; // NOVO: filtro por tipo de custo
+    const costType = req.query.costType as string;
+    const status = req.query.status as string;
+    const dueDateStart = req.query.dueDateStart as string;
+    const dueDateEnd = req.query.dueDateEnd as string;
 
     const where: any = { companyId };
     if (type === "INCOME" || type === "EXPENSE") where.tipo_transacao = type;
 
-    // NOVO: Filtro por tipo de custo
+    // Filtro por tipo de custo
     if (costType === "FIXO" || costType === "VARIAVEL") {
       where.tipo_custo = costType;
     } else if (costType === "PENDING") {
       where.tipo_custo = null;
-      where.tipo_transacao = "EXPENSE"; // Apenas despesas podem ter tipo de custo pendente
+      where.tipo_transacao = "EXPENSE";
     }
 
-    // Filtro de data (usar horário local, não UTC, para evitar problemas de fuso)
+    // NOVO: Filtro por status
+    if (status === "COMPLETED" || status === "PENDING" || status === "OVERDUE") {
+      where.status = status;
+    }
+
+    // Filtro de data de emissão/criação
     if (startDate || endDate) {
       where.date = {};
       if (startDate) {
-        // Início do dia no fuso GMT-3 = 03:00 UTC
         where.date.gte = new Date(startDate + "T03:00:00.000Z");
       }
       if (endDate) {
-        // Fim do dia no fuso GMT-3 = próximo dia 02:59:59 UTC
-        where.date.lte = new Date(endDate + "T02:59:59.999Z");
-        // Adicionar 1 dia para cobrir o dia inteiro
         const endDateObj = new Date(endDate + "T03:00:00.000Z");
         endDateObj.setDate(endDateObj.getDate() + 1);
         endDateObj.setMilliseconds(endDateObj.getMilliseconds() - 1);
         where.date.lte = endDateObj;
+      }
+    }
+
+    // NOVO: Filtro por data de vencimento (via TransactionDetail)
+    if (dueDateStart || dueDateEnd) {
+      where.detail = {};
+      if (dueDateStart) {
+        where.detail.dueDate = { ...(where.detail.dueDate || {}), gte: new Date(dueDateStart + "T03:00:00.000Z") };
+      }
+      if (dueDateEnd) {
+        const dueDateEndObj = new Date(dueDateEnd + "T03:00:00.000Z");
+        dueDateEndObj.setDate(dueDateEndObj.getDate() + 1);
+        dueDateEndObj.setMilliseconds(dueDateEndObj.getMilliseconds() - 1);
+        where.detail.dueDate = { ...(where.detail.dueDate || {}), lte: dueDateEndObj };
       }
     }
 
@@ -415,7 +490,6 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
 
     const {
       date, description, amount, notes, counterpartyId,
-      // Campos do detail
       dueDate, paymentDate, receiptDate,
       amountPaid, amountReceived, discount, interest,
       documentNumber, bankReference, reconciliationNotes,
@@ -430,23 +504,18 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
     if (counterpartyId !== undefined) txUpdateData.counterpartyId = counterpartyId || null;
 
     // Status derivado: se paymentDate/receiptDate preenchido = COMPLETED, senão = PENDING
-    // Sempre recalcular status quando qualquer campo de detalhe é editado
     if (paymentDate !== undefined || receiptDate !== undefined) {
       const tipo = transaction.tipo_transacao;
-      // Buscar detail existente para verificar valores atuais
       const existingDetail = await prisma.transactionDetail.findUnique({
         where: { transactionId: id },
       });
 
-      // Usar o valor enviado se definido, senão manter o existente
       const effectivePaymentDate = paymentDate !== undefined ? paymentDate : existingDetail?.paymentDate;
       const effectiveReceiptDate = receiptDate !== undefined ? receiptDate : existingDetail?.receiptDate;
 
       if ((tipo === "EXPENSE" && effectivePaymentDate) || (tipo === "INCOME" && effectiveReceiptDate)) {
         txUpdateData.status = "COMPLETED";
       } else {
-        // Se removeu a data de pagamento/recebimento, volta para PENDING
-        // Verificar se está vencido
         const effectiveDueDate = dueDate !== undefined ? dueDate : existingDetail?.dueDate;
         if (effectiveDueDate && new Date(effectiveDueDate) < new Date()) {
           txUpdateData.status = "OVERDUE";
@@ -463,7 +532,7 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
       });
     }
 
-    // Atualizar ou criar detail se algum campo de detail foi enviado
+    // Atualizar ou criar detail
     const hasDetailFields = dueDate !== undefined || paymentDate !== undefined || receiptDate !== undefined ||
       amountPaid !== undefined || amountReceived !== undefined || discount !== undefined ||
       interest !== undefined || documentNumber !== undefined || bankReference !== undefined ||
@@ -482,7 +551,6 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
       if (bankReference !== undefined) detailData.bankReference = bankReference || null;
       if (reconciliationNotes !== undefined) detailData.notes = reconciliationNotes || null;
 
-      // Atualizar reconciliationStatus
       if (paymentDate || receiptDate) {
         detailData.reconciliationStatus = "RECONCILED";
       }
@@ -498,7 +566,6 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
       });
     }
 
-    // Retornar transação atualizada com todos os includes
     const updated = await prisma.transaction.findUnique({
       where: { id },
       include: {
@@ -508,7 +575,6 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
       },
     });
 
-    // Regenerar alertas em background
     const patchUserId = (req as any).userId;
     if (patchUserId) {
       generateAlerts(companyId, patchUserId).catch(err => console.error('[Financial] Erro ao gerar alertas após edição:', err));
@@ -521,8 +587,8 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
 });
 
 // ============================================
-// NOVO ENDPOINT: GET /api/financial/cost-breakdown
-// Retorna breakdown de custos fixos vs variáveis
+// GET /api/financial/cost-breakdown
+// REGIME DE CAIXA: apenas COMPLETED, agrupado por paymentDate
 // ============================================
 router.get("/cost-breakdown", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -535,16 +601,12 @@ router.get("/cost-breakdown", authMiddleware, async (req: Request, res: Response
       where: {
         companyId,
         tipo_transacao: "EXPENSE",
-        date: { gte: startDate },
+        status: "COMPLETED",
       },
-      select: {
-        amount: true,
-        tipo_custo: true,
-        date: true,
-      },
+      include: { detail: true },
     });
 
-    // Agrupar por mês e tipo de custo
+    // Agrupar por mês (data efetiva de pagamento) e tipo de custo
     const monthlyBreakdown: Record<string, {
       fixo: number;
       variavel: number;
@@ -552,7 +614,10 @@ router.get("/cost-breakdown", authMiddleware, async (req: Request, res: Response
     }> = {};
 
     expenses.forEach((e) => {
-      const monthKey = `${e.date.getFullYear()}-${String(e.date.getMonth() + 1).padStart(2, "0")}`;
+      const effectiveDate = e.detail?.paymentDate || e.date;
+      if (effectiveDate < startDate) return; // Fora do período
+
+      const monthKey = formatMonthKey(effectiveDate);
       if (!monthlyBreakdown[monthKey]) {
         monthlyBreakdown[monthKey] = { fixo: 0, variavel: 0, pendente: 0 };
       }

@@ -31,6 +31,9 @@ interface ForecastPoint {
   net: number;
   isForecast: true;
   scenario: string;
+  // NOVO: compromissos pendentes já registrados para este mês
+  pendingIncome?: number;
+  pendingExpense?: number;
 }
 
 interface ForecastResponse {
@@ -58,6 +61,23 @@ interface ForecastResponse {
 // HELPERS
 // ============================================
 
+function formatMonthKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Obter data efetiva de caixa
+ * Para EXPENSE: paymentDate (fallback: transaction.date)
+ * Para INCOME: receiptDate (fallback: transaction.date)
+ */
+function getEffectiveDate(tx: any): Date {
+  if (tx.tipo_transacao === "EXPENSE") {
+    return tx.detail?.paymentDate || tx.date;
+  } else {
+    return tx.detail?.receiptDate || tx.date;
+  }
+}
+
 /**
  * Calcula a tendência de receita usando regressão linear simples
  * Retorna: taxa de crescimento mensal (ex: 0.02 = +2%/mês)
@@ -66,7 +86,6 @@ function calculateRevenueGrowthRate(monthlyIncomes: number[]): number {
   const n = monthlyIncomes.length;
   if (n < 3) return 0;
 
-  // Regressão linear: y = a + bx
   let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
   for (let i = 0; i < n; i++) {
     sumX += i;
@@ -78,7 +97,6 @@ function calculateRevenueGrowthRate(monthlyIncomes: number[]): number {
   const avgY = sumY / n;
   const b = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
 
-  // Retorna taxa de crescimento relativa à média
   if (avgY === 0) return 0;
   const growthRate = b / avgY;
 
@@ -92,7 +110,6 @@ function calculateRevenueGrowthRate(monthlyIncomes: number[]): number {
 function weightedAverage(values: number[], weights?: number[]): number {
   if (values.length === 0) return 0;
   if (!weights) {
-    // Pesos crescentes: meses mais recentes pesam mais
     weights = values.map((_, i) => i + 1);
   }
   const totalWeight = weights.reduce((s, w) => s + w, 0);
@@ -123,23 +140,25 @@ function getCurrentMonth(): string {
 const SCENARIO_CONFIG = {
   realistic: {
     revenueMultiplier: 1.0,
-    cmvAdjust: 0,       // pontos percentuais
+    cmvAdjust: 0,
     expenseMultiplier: 1.0,
   },
   optimistic: {
-    revenueMultiplier: 1.15,  // +15% receita
-    cmvAdjust: -0.02,         // -2pp de CMV%
-    expenseMultiplier: 0.95,  // -5% despesas fixas/variáveis
+    revenueMultiplier: 1.15,
+    cmvAdjust: -0.02,
+    expenseMultiplier: 0.95,
   },
   pessimistic: {
-    revenueMultiplier: 0.85,  // -15% receita
-    cmvAdjust: 0.02,          // +2pp de CMV%
-    expenseMultiplier: 1.10,  // +10% despesas fixas/variáveis
+    revenueMultiplier: 0.85,
+    cmvAdjust: 0.02,
+    expenseMultiplier: 1.10,
   },
 };
 
 // ============================================
 // MAIN ENDPOINT: GET /api/forecast
+// REGIME DE CAIXA: histórico usa apenas COMPLETED com data efetiva
+// Projeções consideram transações PENDING com dueDate futuro
 // ============================================
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -171,34 +190,35 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     const scenarioConfig = SCENARIO_CONFIG[scenario as keyof typeof SCENARIO_CONFIG];
 
     // ============================================
-    // 1. BUSCAR TRANSAÇÕES HISTÓRICAS (últimos 12 meses)
+    // 1. BUSCAR TRANSAÇÕES HISTÓRICAS (COMPLETED, últimos 12 meses)
+    //    Usando data efetiva de caixa
     // ============================================
     const currentMonth = getCurrentMonth();
     const twelveMonthsAgo = nextMonth(currentMonth, -12);
+    const twelveMonthsAgoDate = new Date(`${twelveMonthsAgo}-01`);
 
-    const transactions = await prisma.transaction.findMany({
+    const completedTransactions = await prisma.transaction.findMany({
       where: {
         companyId,
-        date: {
-          gte: new Date(`${twelveMonthsAgo}-01`),
-        },
+        status: "COMPLETED",
       },
       include: {
-        category: {
-          select: { code: true, name: true },
-        },
+        category: { select: { code: true, name: true } },
+        detail: true,
       },
       orderBy: { date: "asc" },
     });
 
     // ============================================
-    // 2. AGREGAR POR MÊS COM CLASSIFICAÇÕES
+    // 2. AGREGAR POR MÊS USANDO DATA EFETIVA
     // ============================================
     const monthlyMap = new Map<string, MonthlyData>();
 
-    for (const tx of transactions) {
-      const txDate = new Date(tx.date);
-      const monthKey = `${txDate.getFullYear()}-${String(txDate.getMonth() + 1).padStart(2, "0")}`;
+    for (const tx of completedTransactions) {
+      const effectiveDate = getEffectiveDate(tx);
+      if (effectiveDate < twelveMonthsAgoDate) continue; // Fora do período
+
+      const monthKey = formatMonthKey(effectiveDate);
 
       if (!monthlyMap.has(monthKey)) {
         monthlyMap.set(monthKey, {
@@ -226,22 +246,17 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 
         // Classificar por grupo DRE usando perfil dinâmico
         if (isDirectCost(categoryCode, dreProfile)) {
-          // Custo direto (CMV/CSP/CPV conforme setor)
           data.cmv += amount;
         } else if (categoryCode.startsWith("8.")) {
-          // Grupo 8.x = Impostos e Tributos
           data.taxes += amount;
         } else if (tipoCusto === "FIXO") {
           data.fixed += amount;
         } else if (tipoCusto === "VARIAVEL") {
           data.variable += amount;
         } else {
-          // Sem classificação de custo — classificar por grupo DRE
           if (categoryCode.startsWith("4.") || categoryCode.startsWith("5.")) {
-            // 4.x = Pessoal, 5.x = Operacional → custos fixos
             data.fixed += amount;
           } else if (categoryCode.startsWith("6.") || categoryCode.startsWith("7.")) {
-            // 6.x = Comercial, 7.x = Financeiro → custos variáveis
             data.variable += amount;
           } else {
             data.variable += amount;
@@ -283,37 +298,63 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     }
 
     // ============================================
-    // 4. CALCULAR DRIVERS
+    // 4. CALCULAR DRIVERS (baseados em caixa real)
     // ============================================
-    // Usar últimos 6 meses (ou todos se menos de 6)
     const recentMonths = historical.slice(-6);
     const last3Months = historical.slice(-3);
 
-    // Receita: tendência via regressão linear
     const incomes = historical.map(m => m.income);
     const revenueGrowthRate = calculateRevenueGrowthRate(incomes);
 
-    // CMV% = média ponderada do CMV/Receita dos últimos meses
     const cmvPercents = recentMonths
       .filter(m => m.income > 0)
       .map(m => m.cmv / m.income);
     const avgCmvPercent = cmvPercents.length > 0 ? weightedAverage(cmvPercents) : 0;
 
-    // Impostos% = média ponderada dos Impostos/Receita
     const taxPercents = recentMonths
       .filter(m => m.income > 0)
       .map(m => m.taxes / m.income);
     const avgTaxPercent = taxPercents.length > 0 ? weightedAverage(taxPercents) : 0;
 
-    // Custos fixos = média dos últimos 3 meses
     const avgFixed = last3Months.reduce((s, m) => s + m.fixed, 0) / last3Months.length;
 
-    // Custos variáveis = média ponderada dos últimos 6 meses
     const variableValues = recentMonths.map(m => m.variable);
     const avgVariable = weightedAverage(variableValues);
 
     // ============================================
-    // 5. GERAR FORECAST
+    // 5. BUSCAR TRANSAÇÕES PENDENTES COM VENCIMENTO FUTURO
+    //    Estes são compromissos já conhecidos que devem ser
+    //    sobrepostos à projeção estatística
+    // ============================================
+    const pendingTransactions = await prisma.transaction.findMany({
+      where: {
+        companyId,
+        status: { in: ["PENDING", "OVERDUE"] },
+      },
+      include: {
+        detail: true,
+      },
+    });
+
+    // Agrupar pendentes por mês de vencimento (dueDate)
+    const pendingByMonth: Record<string, { income: number; expense: number }> = {};
+    for (const tx of pendingTransactions) {
+      const dueDate = tx.detail?.dueDate;
+      if (!dueDate) continue; // Sem vencimento, não incluir na projeção
+
+      const monthKey = formatMonthKey(dueDate);
+      if (!pendingByMonth[monthKey]) pendingByMonth[monthKey] = { income: 0, expense: 0 };
+
+      const amount = Math.abs(Number(tx.amount));
+      if (tx.tipo_transacao === "INCOME") {
+        pendingByMonth[monthKey].income += amount;
+      } else {
+        pendingByMonth[monthKey].expense += amount;
+      }
+    }
+
+    // ============================================
+    // 6. GERAR FORECAST (projeção + compromissos pendentes)
     // ============================================
     const lastHistoricalMonth = historical[historical.length - 1].month;
     const lastIncome = historical[historical.length - 1].income;
@@ -339,25 +380,40 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       // Variáveis = média histórica × multiplicador do cenário
       const projectedVariable = avgVariable * scenarioConfig.expenseMultiplier;
 
-      // Total de despesas
+      // Total de despesas (projeção estatística)
       const totalExpense = projectedCmv + projectedTaxes + projectedFixed + projectedVariable;
+
+      // Compromissos pendentes para este mês
+      const pending = pendingByMonth[forecastMonth];
+      const pendingIncome = pending?.income || 0;
+      const pendingExpense = pending?.expense || 0;
+
+      // Receita final = máximo entre projeção e compromissos pendentes
+      // (se já tem receita prevista maior que a projeção, usar a prevista)
+      const finalIncome = Math.max(projectedRevenue, pendingIncome);
+
+      // Despesa final = máximo entre projeção e compromissos pendentes
+      // (compromissos são "piso garantido" de despesas)
+      const finalExpense = Math.max(totalExpense, pendingExpense);
 
       forecast.push({
         month: forecastMonth,
-        income: Math.round(projectedRevenue),
-        expense: Math.round(totalExpense),
+        income: Math.round(finalIncome),
+        expense: Math.round(finalExpense),
         cmv: Math.round(projectedCmv),
         taxes: Math.round(projectedTaxes),
         fixed: Math.round(projectedFixed),
         variable: Math.round(projectedVariable),
-        net: Math.round(projectedRevenue - totalExpense),
+        net: Math.round(finalIncome - finalExpense),
         isForecast: true,
         scenario,
+        pendingIncome: pendingIncome > 0 ? Math.round(pendingIncome) : undefined,
+        pendingExpense: pendingExpense > 0 ? Math.round(pendingExpense) : undefined,
       });
     }
 
     // ============================================
-    // 6. RESPOSTA
+    // 7. RESPOSTA
     // ============================================
     return res.json({
       success: true,
@@ -369,11 +425,11 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
           historicalMonths: historical.length,
           minimumRequired: MIN_MONTHS,
           drivers: {
-            avgCmvPercent: Math.round(avgCmvPercent * 1000) / 10, // ex: 55.2%
+            avgCmvPercent: Math.round(avgCmvPercent * 1000) / 10,
             avgTaxPercent: Math.round(avgTaxPercent * 1000) / 10,
             avgFixed: Math.round(avgFixed),
             avgVariable: Math.round(avgVariable),
-            revenueGrowthRate: Math.round(revenueGrowthRate * 1000) / 10, // ex: 2.3%
+            revenueGrowthRate: Math.round(revenueGrowthRate * 1000) / 10,
           },
           scenario,
         },
