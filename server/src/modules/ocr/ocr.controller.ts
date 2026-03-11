@@ -5,7 +5,13 @@ import { authMiddleware } from "../auth/auth.middleware.js";
 import { generateAlerts } from "../alerts/alerts.controller.js";
 import multer from "multer";
 import OpenAI from "openai";
-import { pdfToPng } from "pdf-to-png-converter";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import fs from "fs";
+import path from "path";
+import os from "os";
+
+const execFileAsync = promisify(execFile);
 
 const router = Router();
 
@@ -165,34 +171,51 @@ function mapDocumentType(tipo: string): "INVOICE" | "RECEIPT" | "BANK_STATEMENT"
 
 // ============================================
 // Montar conteúdo para a API OpenAI
-// PDFs são convertidos para imagem PNG antes de enviar (melhor extração visual)
+// PDFs são convertidos para imagem PNG usando pdftoppm (poppler-utils)
+// que renderiza fontes embutidas corretamente (ao contrário de pdfjs-dist)
 // Imagens são enviadas diretamente como base64
 // ============================================
 async function buildFileContent(file: Express.Multer.File): Promise<any[]> {
   const mimeType = file.mimetype;
 
   if (mimeType === "application/pdf") {
-    console.log(`[OCR] Convertendo PDF para imagem: ${file.originalname}`);
+    console.log(`[OCR] Convertendo PDF para imagem com pdftoppm: ${file.originalname}`);
+    
+    // Criar diretório temporário para o PDF e as imagens
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-pdf-'));
+    const pdfPath = path.join(tmpDir, 'input.pdf');
+    const outputPrefix = path.join(tmpDir, 'page');
+    
     try {
-      const pdfBuffer = new Uint8Array(file.buffer);
-      const pngPages = await pdfToPng(pdfBuffer as any, {
-        disableFontFace: false,
-        useSystemFonts: false,
-        viewportScale: 2.0, // Alta resolução para melhor OCR
-        pagesToProcess: [1, 2, 3], // Processar até 3 páginas
-      });
-
-      if (!pngPages || pngPages.length === 0) {
-        throw new Error("Nenhuma página convertida do PDF");
+      // Salvar o buffer do PDF em arquivo temporário
+      fs.writeFileSync(pdfPath, file.buffer);
+      
+      // Converter PDF para PNG usando pdftoppm (poppler-utils)
+      // -png: formato de saída PNG
+      // -r 200: resolução 200 DPI (boa qualidade sem ser excessivo)
+      // -l 3: processar no máximo 3 páginas
+      await execFileAsync('pdftoppm', [
+        '-png',
+        '-r', '200',
+        '-l', '3',
+        pdfPath,
+        outputPrefix,
+      ], { timeout: 30000 });
+      
+      // Ler as imagens geradas (pdftoppm gera page-1.png, page-2.png, etc.)
+      const pngFiles = fs.readdirSync(tmpDir)
+        .filter(f => f.startsWith('page-') && f.endsWith('.png'))
+        .sort();
+      
+      if (pngFiles.length === 0) {
+        throw new Error('pdftoppm não gerou nenhuma imagem');
       }
-
-      console.log(`[OCR] PDF convertido: ${pngPages.length} página(s) → enviando como imagem`);
-
-      // Retornar todas as páginas como imagens
-      return pngPages
-        .filter((page) => page.content != null)
-        .map((page) => {
-        const pageBase64 = page.content!.toString("base64");
+      
+      console.log(`[OCR] PDF convertido com pdftoppm: ${pngFiles.length} página(s)`);
+      
+      const result = pngFiles.map(pngFile => {
+        const pngBuffer = fs.readFileSync(path.join(tmpDir, pngFile));
+        const pageBase64 = pngBuffer.toString('base64');
         return {
           type: "image_url" as const,
           image_url: {
@@ -201,8 +224,23 @@ async function buildFileContent(file: Express.Multer.File): Promise<any[]> {
           },
         };
       });
+      
+      // Limpar arquivos temporários
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        console.warn(`[OCR] Aviso: falha ao limpar tmpDir: ${tmpDir}`);
+      }
+      
+      return result;
     } catch (pdfError: any) {
-      console.error(`[OCR] Erro ao converter PDF para imagem: ${pdfError.message}`);
+      console.error(`[OCR] Erro ao converter PDF com pdftoppm: ${pdfError.message}`);
+      
+      // Limpar arquivos temporários em caso de erro
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch (cleanupErr) {}
+      
       // Fallback: enviar PDF via Files API (menos preciso, mas funciona)
       console.log(`[OCR] Fallback: enviando PDF via Files API`);
       const uploadedFile = await openai.files.create({
