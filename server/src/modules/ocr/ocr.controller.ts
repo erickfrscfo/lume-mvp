@@ -108,7 +108,8 @@ async function buildFileContent(file: Express.Multer.File): Promise<any[]> {
   if (mimeType === "application/pdf") {
     console.log(`[OCR] Convertendo PDF para imagem: ${file.originalname}`);
     try {
-      const pngPages = await pdfToPng(file.buffer, {
+      const pdfBuffer = new Uint8Array(file.buffer);
+      const pngPages = await pdfToPng(pdfBuffer as any, {
         disableFontFace: false,
         useSystemFonts: false,
         viewportScale: 2.0, // Alta resolução para melhor OCR
@@ -122,8 +123,10 @@ async function buildFileContent(file: Express.Multer.File): Promise<any[]> {
       console.log(`[OCR] PDF convertido: ${pngPages.length} página(s) → enviando como imagem`);
 
       // Retornar todas as páginas como imagens
-      return pngPages.map((page) => {
-        const pageBase64 = page.content.toString("base64");
+      return pngPages
+        .filter((page) => page.content != null)
+        .map((page) => {
+        const pageBase64 = page.content!.toString("base64");
         return {
           type: "image_url" as const,
           image_url: {
