@@ -5,6 +5,7 @@ import { authMiddleware } from "../auth/auth.middleware.js";
 import { generateAlerts } from "../alerts/alerts.controller.js";
 import multer from "multer";
 import OpenAI from "openai";
+import { pdfToPng } from "pdf-to-png-converter";
 
 const router = Router();
 
@@ -98,33 +99,63 @@ function mapDocumentType(tipo: string): "INVOICE" | "RECEIPT" | "BANK_STATEMENT"
 
 // ============================================
 // Montar conteúdo para a API OpenAI
-// Suporta tanto imagens (via image_url) quanto PDFs (via file upload)
+// PDFs são convertidos para imagem PNG antes de enviar (melhor extração visual)
+// Imagens são enviadas diretamente como base64
 // ============================================
-async function buildFileContent(file: Express.Multer.File): Promise<any> {
-  const base64 = file.buffer.toString("base64");
+async function buildFileContent(file: Express.Multer.File): Promise<any[]> {
   const mimeType = file.mimetype;
 
   if (mimeType === "application/pdf") {
-    console.log(`[OCR] Enviando PDF para OpenAI Files API: ${file.originalname}`);
-    const uploadedFile = await openai.files.create({
-      file: new File([file.buffer], file.originalname, { type: mimeType }),
-      purpose: "user_data",
-    });
+    console.log(`[OCR] Convertendo PDF para imagem: ${file.originalname}`);
+    try {
+      const pngPages = await pdfToPng(file.buffer, {
+        disableFontFace: false,
+        useSystemFonts: false,
+        viewportScale: 2.0, // Alta resolução para melhor OCR
+        pagesToProcess: [1, 2, 3], // Processar até 3 páginas
+      });
 
-    return {
-      type: "file" as const,
-      file: {
-        file_id: uploadedFile.id,
-      },
-    };
+      if (!pngPages || pngPages.length === 0) {
+        throw new Error("Nenhuma página convertida do PDF");
+      }
+
+      console.log(`[OCR] PDF convertido: ${pngPages.length} página(s) → enviando como imagem`);
+
+      // Retornar todas as páginas como imagens
+      return pngPages.map((page) => {
+        const pageBase64 = page.content.toString("base64");
+        return {
+          type: "image_url" as const,
+          image_url: {
+            url: `data:image/png;base64,${pageBase64}`,
+            detail: "high" as const,
+          },
+        };
+      });
+    } catch (pdfError: any) {
+      console.error(`[OCR] Erro ao converter PDF para imagem: ${pdfError.message}`);
+      // Fallback: enviar PDF via Files API (menos preciso, mas funciona)
+      console.log(`[OCR] Fallback: enviando PDF via Files API`);
+      const uploadedFile = await openai.files.create({
+        file: new File([file.buffer], file.originalname, { type: mimeType }),
+        purpose: "user_data",
+      });
+      return [{
+        type: "file" as const,
+        file: {
+          file_id: uploadedFile.id,
+        },
+      }];
+    }
   } else {
-    return {
+    const base64 = file.buffer.toString("base64");
+    return [{
       type: "image_url" as const,
       image_url: {
         url: `data:${mimeType};base64,${base64}`,
         detail: "high" as const,
       },
-    };
+    }];
   }
 }
 
@@ -197,7 +228,7 @@ router.post(
 
       // Montar conteúdo do arquivo para a API (suporta PDF e imagens)
       console.log(`[OCR] Processando arquivo: ${file.originalname} (${file.mimetype}, ${(file.size / 1024).toFixed(1)}KB) | Company: ${companyId}`);
-      const fileContent = await buildFileContent(file);
+      const fileContents = await buildFileContent(file);
 
       // Chamar GPT-4o com prompt dinâmico
       const completion = await openai.chat.completions.create({
@@ -207,7 +238,7 @@ router.post(
             role: "user",
             content: [
               { type: "text", text: buildExtractionPrompt(tipoTransacao) },
-              fileContent,
+              ...fileContents,
             ],
           },
         ],
@@ -522,7 +553,7 @@ router.post(
           amount: Math.abs(parseFloat(valor) || 0),
           tipo_transacao: tipo_transacao || "EXPENSE",
           source: "OCR",
-          status: data_vencimento ? "PENDING" : "COMPLETED",
+          status: "PENDING", // OCR nunca tem data de pagamento/recebimento, sempre PENDING
           ...(categoryId && { categoryId }),
           ...(counterpartyId && { counterpartyId }),
           ...(tipoCusto && { tipo_custo: tipoCusto }),
