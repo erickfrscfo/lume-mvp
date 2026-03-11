@@ -9,6 +9,20 @@ import { pdfToPng } from "pdf-to-png-converter";
 
 const router = Router();
 
+// Helper: parsear data sem problema de timezone (D-1)
+function parseLocalDate(dateStr: string | Date): Date {
+  if (dateStr instanceof Date) return dateStr;
+  if (!dateStr) return new Date();
+  if (dateStr.includes('T') || dateStr.includes(' ')) return new Date(dateStr);
+  if (dateStr.includes('/')) {
+    const parts = dateStr.split('/');
+    if (parts.length === 3) {
+      return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]), 12, 0, 0);
+    }
+  }
+  return new Date(dateStr + 'T12:00:00');
+}
+
 // Multer config — armazena em memória (não persiste arquivo)
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -289,7 +303,7 @@ router.post(
           fileSize: file.size,
           type: docType,
           number: extractedData.referencia || `OCR-${Date.now()}`,
-          issueDate: extractedData.data_emissao ? new Date(extractedData.data_emissao) : new Date(),
+          issueDate: extractedData.data_emissao ? parseLocalDate(extractedData.data_emissao) : new Date(),
           amount: Math.abs(parseFloat(extractedData.valor_total) || 0),
           description: extractedData.descricao || null,
           extractedData: extractedData,
@@ -551,7 +565,7 @@ router.post(
       const transaction = await prisma.transaction.create({
         data: {
           companyId,
-          date: new Date(data || new Date()),
+          date: data ? parseLocalDate(data) : new Date(),
           description: descricao || "Transação via documento",
           amount: Math.abs(parseFloat(valor) || 0),
           tipo_transacao: tipo_transacao || "EXPENSE",
@@ -569,7 +583,7 @@ router.post(
         await prisma.transactionDetail.create({
           data: {
             transactionId: transaction.id,
-            dueDate: new Date(data_vencimento),
+            dueDate: parseLocalDate(data_vencimento),
             amountOriginal: Math.abs(parseFloat(valor) || 0),
             documentNumber: referencia || null,
             reconciliationStatus: "PENDING",

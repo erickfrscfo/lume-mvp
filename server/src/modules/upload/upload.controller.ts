@@ -9,6 +9,23 @@ import { generateAlerts } from "../alerts/alerts.controller.js";
 
 const router = Router();
 
+// Helper: parsear data sem problema de timezone (D-1)
+function parseLocalDate(dateStr: string | Date): Date {
+  if (dateStr instanceof Date) return dateStr;
+  if (!dateStr) return new Date();
+  if (typeof dateStr === 'string') {
+    if (dateStr.includes('T') || dateStr.includes(' ')) return new Date(dateStr);
+    if (dateStr.includes('/')) {
+      const parts = dateStr.split('/');
+      if (parts.length === 3) {
+        return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]), 12, 0, 0);
+      }
+    }
+    return new Date(dateStr + 'T12:00:00');
+  }
+  return new Date(dateStr);
+}
+
 // Configurar multer para upload
 const upload = multer({
   dest: "/tmp/uploads/",
@@ -113,7 +130,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         }
         date = new Date(parseInt(dateParts[2]), parseInt(dateParts[1]) - 1, parseInt(dateParts[0]));
       } else {
-        date = new Date(dateStr);
+        date = parseLocalDate(dateStr);
       }
       if (isNaN(date.getTime())) {
         errors.push({ line, error: `Data inválida: ${dateStr}` });
@@ -161,7 +178,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           const parts = pagamentoStr.split("/");
           paymentDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
         } else {
-          paymentDate = new Date(pagamentoStr);
+          paymentDate = parseLocalDate(pagamentoStr);
         }
         if (isNaN(paymentDate.getTime())) paymentDate = undefined;
       }
@@ -175,7 +192,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           const parts = recebimentoStr.split("/");
           receiptDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
         } else {
-          receiptDate = new Date(recebimentoStr);
+          receiptDate = parseLocalDate(recebimentoStr);
         }
         if (isNaN(receiptDate.getTime())) receiptDate = undefined;
       }
@@ -230,7 +247,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           const parts = vencimentoStr.split("/");
           dueDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
         } else {
-          dueDate = new Date(vencimentoStr);
+          dueDate = parseLocalDate(vencimentoStr);
         }
         if (isNaN(dueDate.getTime())) dueDate = undefined;
       }

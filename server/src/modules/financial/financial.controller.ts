@@ -8,6 +8,27 @@ import { z } from "zod";
 const router = Router();
 
 // ============================================
+// HELPER: Parsear data sem problema de timezone
+// Quando recebe "2025-11-03" (sem hora), adiciona T12:00:00 para
+// evitar que new Date() interprete como UTC meia-noite e cause D-1
+// ============================================
+function parseLocalDate(dateStr: string | Date): Date {
+  if (dateStr instanceof Date) return dateStr;
+  if (!dateStr) return new Date();
+  // Se já tem hora (T ou espaço), não mexe
+  if (dateStr.includes('T') || dateStr.includes(' ')) return new Date(dateStr);
+  // Se é formato DD/MM/AAAA, converte para Date local
+  if (dateStr.includes('/')) {
+    const parts = dateStr.split('/');
+    if (parts.length === 3) {
+      return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]), 12, 0, 0);
+    }
+  }
+  // Formato YYYY-MM-DD: adiciona meio-dia para evitar D-1
+  return new Date(dateStr + 'T12:00:00');
+}
+
+// ============================================
 // HELPER: Obter data efetiva de caixa
 // Para EXPENSE: paymentDate (fallback: transaction.date)
 // Para INCOME: receiptDate (fallback: transaction.date)
@@ -415,7 +436,7 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
     const transaction = await prisma.transaction.create({
       data: {
         companyId,
-        date: new Date(date),
+        date: parseLocalDate(date),
         description,
         amount: Math.abs(parseFloat(amount)),
         tipo_transacao,
@@ -431,9 +452,9 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
       data: {
         transactionId: transaction.id,
         counterpartyId: counterpartyId || null,
-        dueDate: dueDate ? new Date(dueDate) : null,
-        paymentDate: paymentDate ? new Date(paymentDate) : null,
-        receiptDate: receiptDate ? new Date(receiptDate) : null,
+        dueDate: dueDate ? parseLocalDate(dueDate) : null,
+        paymentDate: paymentDate ? parseLocalDate(paymentDate) : null,
+        receiptDate: receiptDate ? parseLocalDate(receiptDate) : null,
         documentNumber: documentNumber || null,
         amountOriginal: Math.abs(parseFloat(amount)),
       },
@@ -497,7 +518,7 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
 
     // Atualizar campos da transação principal
     const txUpdateData: any = {};
-    if (date !== undefined) txUpdateData.date = new Date(date);
+    if (date !== undefined) txUpdateData.date = parseLocalDate(date);
     if (description !== undefined) txUpdateData.description = description;
     if (amount !== undefined) txUpdateData.amount = Math.abs(parseFloat(amount));
     if (notes !== undefined) txUpdateData.notes = notes;
@@ -540,9 +561,9 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
 
     if (hasDetailFields) {
       const detailData: any = {};
-      if (dueDate !== undefined) detailData.dueDate = dueDate ? new Date(dueDate) : null;
-      if (paymentDate !== undefined) detailData.paymentDate = paymentDate ? new Date(paymentDate) : null;
-      if (receiptDate !== undefined) detailData.receiptDate = receiptDate ? new Date(receiptDate) : null;
+      if (dueDate !== undefined) detailData.dueDate = dueDate ? parseLocalDate(dueDate) : null;
+      if (paymentDate !== undefined) detailData.paymentDate = paymentDate ? parseLocalDate(paymentDate) : null;
+      if (receiptDate !== undefined) detailData.receiptDate = receiptDate ? parseLocalDate(receiptDate) : null;
       if (amountPaid !== undefined) detailData.amountPaid = amountPaid ? parseFloat(amountPaid) : null;
       if (amountReceived !== undefined) detailData.amountReceived = amountReceived ? parseFloat(amountReceived) : null;
       if (discount !== undefined) detailData.discount = discount ? parseFloat(discount) : null;
