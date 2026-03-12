@@ -361,6 +361,25 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
       const companySector = company?.sector || "MISTO";
 
       const batchSize = 20;
+      // Acumular classificações entre lotes para consistência
+      const accumulatedClassifications: Array<{ description: string; categoryCode: string }> = [];
+
+      // Buscar classificações existentes da empresa para contexto inicial
+      const existingClassified = await prisma.transaction.findMany({
+        where: { companyId, categoryId: { not: null } },
+        select: { description: true, category: { select: { code: true } } },
+        distinct: ['description'],
+        take: 100, // Limitar para não sobrecarregar o prompt
+      });
+      existingClassified.forEach((t) => {
+        if (t.category?.code) {
+          accumulatedClassifications.push({
+            description: t.description,
+            categoryCode: t.category.code,
+          });
+        }
+      });
+
       for (let i = 0; i < unclassified.length; i += batchSize) {
         const batch = unclassified.slice(i, i + batchSize).map((t) => ({
           id: t.id,
@@ -374,7 +393,8 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
             userId,
             batch,
             categories.map((c) => ({ code: c.code, name: c.name, type: c.type })),
-            companySector
+            companySector,
+            accumulatedClassifications
           );
 
           for (const classification of classifications) {
@@ -405,6 +425,14 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
                   confidence: classification.confidence,
                 },
               });
+
+              // Acumular classificação para contexto dos próximos lotes
+              if (transaction) {
+                accumulatedClassifications.push({
+                  description: transaction.description,
+                  categoryCode: finalCategoryCode,
+                });
+              }
             }
           }
         } catch (aiError) {

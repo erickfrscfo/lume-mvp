@@ -79,7 +79,8 @@ export async function classifyTransactions(
   userId: string,
   transactions: Array<{ id: string; description: string; amount: number; type: string }>,
   categories: Array<{ code: string; name: string; type: string }>,
-  companySector?: string
+  companySector?: string,
+  previousClassifications?: Array<{ description: string; categoryCode: string }>
 ) {
   const categoryList = categories
     .map((c) => `${c.code} - ${c.name} (${c.type})`)
@@ -88,6 +89,22 @@ export async function classifyTransactions(
   const transactionList = transactions
     .map((t) => `ID: ${t.id} | Descrição: "${t.description}" | Valor: R$ ${t.amount} | Tipo: ${t.type}`)
     .join("\n");
+
+  // Construir contexto de classificações anteriores para consistência entre lotes
+  let previousContext = "";
+  if (previousClassifications && previousClassifications.length > 0) {
+    // Deduplica: pega apenas uma classificação por descrição única
+    const uniqueMap = new Map<string, string>();
+    previousClassifications.forEach((pc) => {
+      if (!uniqueMap.has(pc.description)) {
+        uniqueMap.set(pc.description, pc.categoryCode);
+      }
+    });
+    const contextLines = Array.from(uniqueMap.entries())
+      .map(([desc, code]) => `"${desc}" → ${code}`)
+      .join("\n");
+    previousContext = `\n\n=== CLASSIFICAÇÕES JÁ REALIZADAS (OBRIGATÓRIO SEGUIR) ===\nAs transações abaixo já foram classificadas em lotes anteriores.\nVocê DEVE usar EXATAMENTE o mesmo código para descrições iguais ou muito similares:\n${contextLines}`;
+  }
 
   const systemPrompt = `Você é um contador especializado em classificação contábil para PMEs brasileiras.
 Classifique cada transação abaixo em uma das categorias fornecidas.
@@ -224,7 +241,7 @@ ${companySector === "SERVICOS" ? `
 - Se a descrição parecer ambígua, SEMPRE respeite o campo Tipo da transação.`;
 
   const userPrompt = `CATEGORIAS DISPONÍVEIS:
-${categoryList}
+${categoryList}${previousContext}
 
 TRANSAÇÕES PARA CLASSIFICAR:
 ${transactionList}`;
