@@ -380,10 +380,27 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           for (const classification of classifications) {
             const category = categories.find((c) => c.code === classification.categoryCode);
             if (category) {
+              // VALIDAÇÃO: Consistência tipo_transacao vs código de categoria
+              const transaction = batch.find((t) => t.id === classification.id);
+              const catPrefix = parseInt(classification.categoryCode.split(".")[0]);
+              const isRevenueCategory = catPrefix <= 2;
+              const isExpenseTransaction = transaction?.type === "EXPENSE";
+              const isIncomeTransaction = transaction?.type === "INCOME";
+
+              // Rejeitar classificação inconsistente e aplicar fallback
+              let finalCategoryCode = classification.categoryCode;
+              if (isExpenseTransaction && isRevenueCategory) {
+                console.warn(`[Upload] IA classificou despesa "${transaction?.description}" como receita (${classification.categoryCode}). Aplicando fallback 5.0.`);
+                finalCategoryCode = "5.0"; // Despesas Operacionais genérico
+              } else if (isIncomeTransaction && !isRevenueCategory) {
+                console.warn(`[Upload] IA classificou receita "${transaction?.description}" como despesa (${classification.categoryCode}). Aplicando fallback 2.5.`);
+                finalCategoryCode = "2.5"; // Outras Receitas
+              }
+
               await prisma.transaction.update({
                 where: { id: classification.id },
                 data: {
-                  categoryId: (await prisma.category.findUnique({ where: { code: classification.categoryCode } }))?.id,
+                  categoryId: (await prisma.category.findUnique({ where: { code: finalCategoryCode } }))?.id,
                   aiClassified: true,
                   confidence: classification.confidence,
                 },

@@ -216,7 +216,12 @@ ${companySector === "SERVICOS" ? `
 - NÃO classifique impostos (Simples, ISS, ICMS, PIS, COFINS, IRPJ) como 4.x — use 8.x
 - NÃO classifique salários como 5.x — use 4.1
 - NÃO classifique CMV (mercadoria, estoque, frete, embalagem) como 5.x ou 6.x — use 3.x
-- NÃO classifique a mesma descrição em categorias diferentes em lotes distintos`;
+- NÃO classifique a mesma descrição em categorias diferentes em lotes distintos
+
+=== REGRA CRÍTICA: CONSISTÊNCIA TIPO vs CATEGORIA (OBRIGATÓRIA) ===
+- Transações com Tipo=EXPENSE DEVEM OBRIGATORIAMENTE receber categorias de DESPESA (códigos 3.x a 9.x). NUNCA use 1.x ou 2.x para despesas.
+- Transações com Tipo=INCOME DEVEM OBRIGATORIAMENTE receber categorias de RECEITA (códigos 1.x ou 2.x). NUNCA use 3.x a 9.x para receitas.
+- Se a descrição parecer ambígua, SEMPRE respeite o campo Tipo da transação.`;
 
   const userPrompt = `CATEGORIAS DISPONÍVEIS:
 ${categoryList}

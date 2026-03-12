@@ -255,13 +255,37 @@ router.get("/dre", authMiddleware, async (req: Request, res: Response, next: Nex
     });
 
     // Agrupar por mês (data efetiva) e categoria
+    // CORREÇÃO: Fallback inteligente para transações sem categoria ou com categoria inconsistente
     const dreData: Record<string, Record<string, number>> = {};
     transactions.forEach((t) => {
       const effectiveDate = getEffectiveDate(t);
       if (effectiveDate < startDate) return; // Fora do período
 
       const monthKey = formatMonthKey(effectiveDate);
-      const catCode = t.category?.code || "0.0";
+      let catCode = t.category?.code || "0.0";
+      const catPrefix = catCode.split(".")[0];
+
+      // FALLBACK 1: Transação sem categoria → usar tipo_transacao como fallback
+      if (catCode === "0.0") {
+        if (t.tipo_transacao === "INCOME") {
+          catCode = "2.5"; // Outras Receitas
+        } else {
+          catCode = "5.0"; // Despesas Operacionais (genérico)
+        }
+      }
+
+      // FALLBACK 2: Despesa com categoria de receita (1.x ou 2.x) → reclassificar
+      if (t.tipo_transacao === "EXPENSE" && (catPrefix === "1" || catPrefix === "2")) {
+        catCode = "5.0"; // Despesas Operacionais (genérico)
+        console.warn(`[DRE] Inconsistência: despesa "${t.description}" (${t.id}) tem categoria de receita ${t.category?.code}. Usando fallback 5.0.`);
+      }
+
+      // FALLBACK 3: Receita com categoria de despesa (3.x a 8.x) → reclassificar
+      if (t.tipo_transacao === "INCOME" && parseInt(catPrefix) >= 3) {
+        catCode = "2.5"; // Outras Receitas
+        console.warn(`[DRE] Inconsistência: receita "${t.description}" (${t.id}) tem categoria de despesa ${t.category?.code}. Usando fallback 2.5.`);
+      }
+
       if (!dreData[monthKey]) dreData[monthKey] = {};
       dreData[monthKey][catCode] = (dreData[monthKey][catCode] || 0) + Number(t.amount);
     });
