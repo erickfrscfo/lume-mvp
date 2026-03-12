@@ -303,19 +303,51 @@ router.get("/chat/history", authMiddleware, async (req: Request, res: Response, 
 });
 
 // ============================================
+// HELPERS: Mesma lógica do financial.controller.ts
+// para garantir consistência entre Dashboard e IA
+// ============================================
+
+/**
+ * Obter data efetiva de caixa (regime de caixa)
+ * Para EXPENSE: paymentDate (fallback: transaction.date)
+ * Para INCOME: receiptDate (fallback: transaction.date)
+ * 
+ * IMPORTANTE: Deve ser idêntica à função no financial.controller.ts
+ */
+function getEffectiveDate(tx: any): Date {
+  if (tx.tipo_transacao === "EXPENSE") {
+    return tx.detail?.paymentDate || tx.date;
+  } else {
+    return tx.detail?.receiptDate || tx.date;
+  }
+}
+
+function formatMonthKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// ============================================
 // CONTEXTO FINANCEIRO ENRIQUECIDO
-// Agora inclui: despesas por categoria POR MÊS (não apenas acumulado)
-// para que a IA consiga responder perguntas sobre meses específicos
+// 
+// CORREÇÃO CRÍTICA (v2):
+// - Agora usa APENAS transações COMPLETED (igual ao Dashboard)
+// - Agrupa por DATA EFETIVA (paymentDate/receiptDate), não por date
+// - Inclui saldo acumulado mês a mês
+// - Garante consistência com os dados exibidos na tela
 // ============================================
 async function getEnrichedFinancialContext(companyId: string, extraContext?: string): Promise<string> {
   const now = new Date();
 
   const company = await prisma.company.findUnique({ where: { id: companyId } });
 
-  // Buscar TODAS as transações da empresa
+  // ============================================
+  // CORREÇÃO 1: Buscar APENAS transações COMPLETED
+  // Antes: buscava TODAS (incluindo PENDING/OVERDUE)
+  // Agora: filtra por status COMPLETED, igual ao financial.controller.ts
+  // ============================================
   const allTransactions = await prisma.transaction.findMany({
-    where: { companyId },
-    include: { category: true },
+    where: { companyId, status: "COMPLETED" },
+    include: { category: true, detail: true },
     orderBy: { date: "asc" },
   });
 
@@ -327,7 +359,11 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     return "Nenhuma transação financeira registrada ainda.";
   }
 
-  // Agrupamento mês a mês com categorias detalhadas POR MÊS
+  // ============================================
+  // CORREÇÃO 2: Agrupar por DATA EFETIVA (regime de caixa)
+  // Antes: usava t.date (data de emissão)
+  // Agora: usa getEffectiveDate() (paymentDate/receiptDate), igual ao Dashboard
+  // ============================================
   const monthlyData: Record<string, {
     income: number;
     expense: number;
@@ -336,7 +372,10 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
   }> = {};
 
   allTransactions.forEach((t) => {
-    const mk = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, "0")}`;
+    // USAR DATA EFETIVA, não t.date
+    const effectiveDate = getEffectiveDate(t);
+    const mk = formatMonthKey(effectiveDate);
+
     if (!monthlyData[mk]) {
       monthlyData[mk] = { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {} };
     }
@@ -458,15 +497,25 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
       }).join("\n")
     : "  Nenhum cenário ativo.";
 
+  // ============================================
+  // CONTEXTO: Informar a IA sobre o regime de caixa
+  // ============================================
   let context = `=== DADOS DA EMPRESA ===
 Nome: ${company?.name || "Não informado"}
 CNPJ: ${company?.cnpj || "Não informado"}
 Setor: ${company?.sector || "Não informado"}
 
+=== REGIME DE CAIXA ===
+IMPORTANTE: Todos os dados abaixo seguem o REGIME DE CAIXA.
+- Receitas são contabilizadas na data de RECEBIMENTO (não na data de emissão)
+- Despesas são contabilizadas na data de PAGAMENTO (não na data de emissão)
+- Apenas transações EFETIVAMENTE PAGAS/RECEBIDAS estão incluídas
+- Transações pendentes ou em atraso NÃO estão nos números abaixo
+
 === RESUMO FINANCEIRO (todos os ${monthCount} meses com dados) ===
 - Total de Receitas: R$ ${totalIncome.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Total de Despesas: R$ ${totalExpense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-- Saldo Acumulado: R$ ${balance.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Saldo de Caixa (acumulado total): R$ ${balance.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Receita Média Mensal: R$ ${avgMonthlyIncome.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Despesa Média Mensal: R$ ${avgMonthlyExpense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Taxa de Queima (Burn Rate): R$ ${burnRate > 0 ? burnRate.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0,00"}/mês
@@ -479,10 +528,14 @@ Setor: ${company?.sector || "Não informado"}
 - Lucro Bruto Atual: R$ ${currentGrossProfit.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastGrossProfit.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Variação do Lucro Bruto: ${grossProfitChange > 0 ? "+" : ""}${grossProfitChange.toFixed(1)}%
 - Margem Atual: ${currentMargin.toFixed(1)}% | Margem Anterior: ${lastMargin.toFixed(1)}%
+- Saldo Acumulado Atual: R$ ${(monthlyBalances[currentMonthKey] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Saldo Acumulado Anterior: R$ ${(monthlyBalances[lastMonthKey] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 
-=== EVOLUÇÃO MENSAL DETALHADA (com categorias, saldo acumulado por mês) ===
-IMPORTANTE: Os valores abaixo são POR MÊS. Quando o usuário perguntar sobre um mês específíco, use APENAS os dados daquele mês. NÃO some valores de meses diferentes.
-IMPORTANTE: O "Saldo Acumulado" é o saldo total desde o início (acumulado de todos os meses até aquele mês). Para comparar saldo entre dois meses, use o saldo acumulado do mês anterior e do mês atual.
+=== EVOLUÇÃO MENSAL DETALHADA (regime de caixa, com categorias e saldo acumulado) ===
+IMPORTANTE: Os valores abaixo são POR MÊS, no regime de caixa (data de pagamento/recebimento).
+Quando o usuário perguntar sobre um mês específico, use APENAS os dados daquele mês. NÃO some valores de meses diferentes.
+O "Saldo Acumulado" é o saldo total desde o início (soma cumulativa de todos os meses até aquele mês).
+Para comparar saldo entre dois meses, use o Saldo Acumulado de cada mês.
+Exemplo: Se o saldo acumulado de fevereiro é R$ 62.000 e o de março é R$ 101.000, a variação é R$ 39.000 (63%).
 
 ${monthlyEvolution}
 
@@ -495,6 +548,7 @@ ${scenarioText}`;
   // ============================================
   // TRANSAÇÕES INDIVIDUAIS RECENTES
   // Permite à IA responder sobre transações específicas por descrição
+  // NOTA: Usa data efetiva para exibição
   // ============================================
   const recentTransactions = allTransactions
     .slice(-200) // Últimas 200 transações (já ordenadas por date ASC)
@@ -502,27 +556,30 @@ ${scenarioText}`;
 
   if (recentTransactions.length > 0) {
     const txLines = recentTransactions.map((t) => {
-      const dateStr = `${String(t.date.getDate()).padStart(2, "0")}/${String(t.date.getMonth() + 1).padStart(2, "0")}/${t.date.getFullYear()}`;
+      // Usar data efetiva para exibição (consistente com Dashboard)
+      const effectiveDate = getEffectiveDate(t);
+      const dateStr = `${String(effectiveDate.getDate()).padStart(2, "0")}/${String(effectiveDate.getMonth() + 1).padStart(2, "0")}/${effectiveDate.getFullYear()}`;
       const tipo = t.tipo_transacao === "INCOME" ? "Receita" : "Despesa";
       const catName = t.category?.name || "Não classificado";
       const tipoCusto = t.tipo_custo ? ` | ${t.tipo_custo === "FIXO" ? "Custo Fixo" : "Custo Variável"}` : "";
       return `  - ${dateStr} | ${tipo} | ${catName} | "${t.description}" | R$ ${Number(t.amount).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${tipoCusto}`;
     }).join("\n");
 
-    context += `\n\n=== TRANSAÇÕES INDIVIDUAIS (últimas ${recentTransactions.length} transações) ===
+    context += `\n\n=== TRANSAÇÕES INDIVIDUAIS (últimas ${recentTransactions.length} transações, regime de caixa) ===
 IMPORTANTE: Use estes dados para responder perguntas sobre transações específicas.
+As datas abaixo são DATAS EFETIVAS (pagamento/recebimento), não datas de emissão.
 Quando o usuário perguntar sobre uma despesa específica (ex: "conta de energia", "aluguel", "internet"),
 filtre por DESCRIÇÃO da transação (não apenas por categoria).
 Uma mesma categoria pode conter transações de naturezas diferentes.
 Por exemplo, a categoria "Energia e Água" pode incluir tanto "Conta de energia unidade matriz" quanto "Conta de internet corporativa" — são despesas distintas.
 Sempre liste as transações individuais com data, descrição e valor quando o usuário pedir detalhes.
 
-Formato: Data | Tipo | Categoria | Descrição | Valor | Classificação de Custo
+Formato: Data Efetiva | Tipo | Categoria | Descrição | Valor | Classificação de Custo
 ${txLines}`;
   }
 
   if (extraContext) {
-    context += `\n\n=== CONTEXTO ADICIONAL (dados da tela) ===\n${extraContext}`;
+    context += `\n\n=== CONTEXTO ADICIONAL (dados da tela do usuário) ===\n${extraContext}`;
   }
 
   return context;
