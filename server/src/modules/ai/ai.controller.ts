@@ -373,13 +373,23 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
   const currentMargin = currentMonth.income > 0 ? (currentGrossProfit / currentMonth.income * 100) : 0;
   const lastMargin = lastMonth.income > 0 ? (lastGrossProfit / lastMonth.income * 100) : 0;
 
-  // Evolução mensal COM MARGEM DE LUCRO E CATEGORIAS DETALHADAS
+  // Evolução mensal COM MARGEM DE LUCRO, CATEGORIAS DETALHADAS E SALDO ACUMULADO
   const monthKeys = Object.keys(monthlyData).sort();
+  
+  // Calcular saldo acumulado mês a mês
+  let runningBalance = 0;
+  const monthlyBalances: Record<string, number> = {};
+  monthKeys.forEach((mk) => {
+    const d = monthlyData[mk];
+    runningBalance += d.income - d.expense;
+    monthlyBalances[mk] = runningBalance;
+  });
 
   const monthlyEvolution = monthKeys.map((mk) => {
     const d = monthlyData[mk];
     const net = d.income - d.expense;
     const margin = d.income > 0 ? ((net / d.income) * 100).toFixed(1) : "0.0";
+    const accumulatedBalance = monthlyBalances[mk];
 
     // Top 5 despesas do mês
     const topExpenses = Object.entries(d.expenseByCategory)
@@ -399,6 +409,7 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     detail += `\n    Receita Total: R$ ${d.income.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     detail += `\n    Despesa Total: R$ ${d.expense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     detail += `\n    Líquido: R$ ${net.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    detail += `\n    Saldo Acumulado: R$ ${accumulatedBalance.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     detail += `\n    Margem de Lucro: ${margin}%`;
     if (topIncomes) {
       detail += `\n    Receitas por categoria:`;
@@ -469,8 +480,9 @@ Setor: ${company?.sector || "Não informado"}
 - Variação do Lucro Bruto: ${grossProfitChange > 0 ? "+" : ""}${grossProfitChange.toFixed(1)}%
 - Margem Atual: ${currentMargin.toFixed(1)}% | Margem Anterior: ${lastMargin.toFixed(1)}%
 
-=== EVOLUÇÃO MENSAL DETALHADA (com categorias por mês) ===
-IMPORTANTE: Os valores abaixo são POR MÊS. Quando o usuário perguntar sobre um mês específico, use APENAS os dados daquele mês. NÃO some valores de meses diferentes.
+=== EVOLUÇÃO MENSAL DETALHADA (com categorias, saldo acumulado por mês) ===
+IMPORTANTE: Os valores abaixo são POR MÊS. Quando o usuário perguntar sobre um mês específíco, use APENAS os dados daquele mês. NÃO some valores de meses diferentes.
+IMPORTANTE: O "Saldo Acumulado" é o saldo total desde o início (acumulado de todos os meses até aquele mês). Para comparar saldo entre dois meses, use o saldo acumulado do mês anterior e do mês atual.
 
 ${monthlyEvolution}
 
