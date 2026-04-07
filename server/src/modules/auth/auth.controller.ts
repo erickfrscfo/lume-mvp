@@ -1,13 +1,16 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import * as authService from "./auth.service.js";
-import { authMiddleware } from "./auth.middleware.js";
+import { authMiddleware, adminKeyMiddleware } from "./auth.middleware.js";
 
 const router = Router();
 
 const registerSchema = z.object({
   name: z.string().min(2, "Nome deve ter pelo menos 2 caracteres"),
-  username: z.string().min(3, "Usuário deve ter pelo menos 3 caracteres").regex(/^[a-zA-Z0-9_]+$/, "Usuário só pode conter letras, números e _"),
+  username: z
+    .string()
+    .min(3, "Usuário deve ter pelo menos 3 caracteres")
+    .regex(/^[a-zA-Z0-9_]+$/, "Usuário só pode conter letras, números e _"),
   email: z.string().email("E-mail inválido"),
   password: z.string().min(6, "Senha deve ter pelo menos 6 caracteres"),
   company: z.object({
@@ -23,36 +26,68 @@ const loginSchema = z.object({
   companyCode: z.string().min(1, "Código da empresa é obrigatório"),
 });
 
-// POST /api/auth/register
-router.post("/register", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const data = registerSchema.parse(req.body);
-    const result = await authService.register(data);
-    res.status(201).json({ success: true, data: result });
-  } catch (error) {
-    next(error);
-  }
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Senha atual é obrigatória"),
+  newPassword: z.string().min(6, "Nova senha deve ter pelo menos 6 caracteres"),
 });
+
+// POST /api/auth/register — PROTEGIDO: requer header X-Admin-Key
+router.post(
+  "/register",
+  adminKeyMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const data = registerSchema.parse(req.body);
+      const result = await authService.register(data);
+      res.status(201).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 // POST /api/auth/login
-router.post("/login", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const data = loginSchema.parse(req.body);
-    const result = await authService.login(data);
-    res.json({ success: true, data: result });
-  } catch (error) {
-    next(error);
+router.post(
+  "/login",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const data = loginSchema.parse(req.body);
+      const result = await authService.login(data);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 // GET /api/auth/me
-router.get("/me", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const result = await authService.getMe((req as any).userId);
-    res.json({ success: true, data: result });
-  } catch (error) {
-    next(error);
+router.get(
+  "/me",
+  authMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await authService.getMe((req as any).userId);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
+
+// PATCH /api/auth/change-password — requer autenticação
+router.patch(
+  "/change-password",
+  authMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const data = changePasswordSchema.parse(req.body);
+      const userId = (req as any).userId;
+      await authService.changePassword(userId, data.currentPassword, data.newPassword);
+      res.json({ success: true, message: "Senha alterada com sucesso." });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 export default router;

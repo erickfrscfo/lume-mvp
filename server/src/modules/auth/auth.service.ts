@@ -195,3 +195,42 @@ export async function getMe(userId: string) {
     },
   };
 }
+
+/**
+ * Altera a senha do usuário autenticado.
+ * Valida a senha atual antes de permitir a troca.
+ */
+export async function changePassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+  });
+
+  if (!user) {
+    throw new AppError("Usuário não encontrado", 404);
+  }
+
+  // Verifica se a senha atual está correta
+  const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+  if (!isCurrentPasswordValid) {
+    throw new AppError("Senha atual incorreta", 400);
+  }
+
+  // Verifica se a nova senha é diferente da atual
+  const isSamePassword = await bcrypt.compare(newPassword, user.password);
+  if (isSamePassword) {
+    throw new AppError("A nova senha deve ser diferente da senha atual", 400);
+  }
+
+  // Hash da nova senha
+  const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+  // Atualiza no banco
+  await prisma.user.update({
+    where: { id: userId },
+    data: { password: hashedPassword },
+  });
+}

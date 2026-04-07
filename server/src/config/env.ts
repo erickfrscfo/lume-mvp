@@ -8,6 +8,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   CORS_ORIGIN: z.string().default("*"),
+  ADMIN_ONBOARDING_KEY: z.string().min(1, "ADMIN_ONBOARDING_KEY é obrigatória"),
 });
 
 export type Env = z.infer<typeof envSchema>;
