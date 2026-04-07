@@ -271,12 +271,72 @@ ${chartPrompt}
 === REGRAS ESPECÍFICAS POR SETOR ===
 ${sectorRules}
 
+=== REGRAS DE DESAMBIGUAÇÃO (PRIORIDADE MÁXIMA) ===
+
+** PADRÃO 1 — SERVIÇOS BASEADOS EM APLICATIVO vs TELECOMUNICAÇÕES **
+A natureza do gasto define a categoria, NÃO a forma de contratação (app/digital).
+- Uber, 99, Cabify, táxi, Uber Corporativo → 5.8 Transporte e Deslocamento (NUNCA 5.3)
+- iFood, Rappi, Uber Eats, VR, VA, vale-alimentação → 4.3 Benefícios (NUNCA 5.3)
+- Plano de Saúde, Unimed, Amil, SulAmérica, dental, saúde corporativa → 4.3 Benefícios (NUNCA 5.3)
+- Telecomunicações (5.3) é EXCLUSIVAMENTE para: telefonia fixa/móvel, internet fibra/banda larga, planos de celular corporativo
+- REGRA: Se o serviço é contratado via app mas a NATUREZA é transporte → 5.8. Se é alimentação → 4.3. Se é saúde → 4.3.
+
+** PADRÃO 2 — CONTAS DE CONSUMO: NATUREZA DO SERVIÇO, NÃO FORMA DE COBRANÇA **
+Não agrupe "contas" genéricas. Classifique pela natureza do serviço:
+- Conta de Energia, Eletricidade, CPFL, Enel, Light → 5.2 Energia e Água
+- Conta de Água, Sabesp, Copasa, CEDAE → 5.2 Energia e Água
+- Internet, Fibra, Banda Larga, Vivo Fibra, NET, Tim Live → 5.3 Telecomunicações (NUNCA 5.2)
+- Telefone, Celular Corporativo, Plano Vivo/Tim/Claro → 5.3 Telecomunicações
+- REGRA: Internet NÃO é Energia e Água. Internet é Telecomunicações (5.3).
+
+** PADRÃO 3 — DESPESAS COM PESSOAL (GRUPO 4.x) — SUBCATEGORIAS OBRIGATÓRIAS **
+O grupo 4.x tem subcategorias específicas. NÃO misture:
+- 4.1 Salários e Pró-Labore: APENAS salário bruto, folha de pagamento, pró-labore de sócios, 13º salário, férias
+- 4.2 Encargos Trabalhistas: FGTS, multa FGTS, contribuição sindical, INSS funcionário (retido). FGTS NUNCA é 4.1.
+- 4.3 Benefícios: Plano de saúde, plano dental, vale-alimentação (VA), vale-refeição (VR), vale-transporte (VT), seguro de vida de funcionários, alimentação corporativa, coffee break
+- 4.5 Treinamento e Capacitação: Cursos, workshops, treinamentos, certificações, capacitação, palestras, eventos de treinamento
+- 4.6 INSS Patronal: APENAS a contribuição patronal do INSS (parte da empresa). NÃO confundir com INSS retido do funcionário (4.2).
+- REGRA: FGTS → SEMPRE 4.2. Plano de Saúde → SEMPRE 4.3. Cursos → SEMPRE 4.5. Alimentação/Coffee → SEMPRE 4.3.
+
+** PADRÃO 4 — IMPOSTOS E TRIBUTOS (GRUPO 8.x) — DESAMBIGUAÇÃO OBRIGATÓRIA **
+- 8.1 Simples Nacional / DAS: APENAS para empresas optantes do Simples Nacional. Se a descrição menciona ISS, PIS, COFINS, IRPJ, CSLL separadamente, NÃO é Simples Nacional.
+- 8.2 ISS: Imposto Sobre Serviços, recolhido separadamente (Lucro Presumido/Real)
+- 8.4 PIS/COFINS: Contribuições federais, recolhidas separadamente
+- Se a descrição menciona "ISS/PIS/COFINS" ou "Impostos Trimestrais", classifique como 8.4 PIS/COFINS (maior componente). NUNCA como 8.1 DAS.
+- Se a descrição menciona APENAS "ISS", use 8.2. Se menciona APENAS "PIS" ou "COFINS", use 8.4.
+- REGRA: Empresa de Lucro Presumido/Real NUNCA paga DAS (8.1). Use 8.2, 8.4 ou 8.7.
+
+** PADRÃO 5 — SERVIÇOS GERAIS vs MANUTENÇÃO **
+- Manutenção e Reparos (5.6): APENAS conserto de equipamentos, reparos em instalações, manutenção preventiva de máquinas
+- Serviço de Limpeza, faxina, conservação → 5.1 Aluguel e Condomínio (custo de ocupação)
+- Serviços Gráficos, impressão de materiais, folders, cartões → 5.5 Material de Escritório
+- REGRA: Limpeza NÃO é Manutenção. Gráfica NÃO é Manutenção.
+
+** PADRÃO 6 — TRANSPORTE E DESLOCAMENTO (5.8) **
+- Uber, 99, táxi, corridas de app → 5.8
+- Estacionamento, vaga de garagem corporativa → 5.8
+- Combustível, gasolina, diesel, abastecimento → 5.8
+- Pedágio, IPVA (se frota) → 5.8
+- Viagens, hospedagem, passagens aéreas → 5.8
+- REGRA: Estacionamento Corporativo é Transporte (5.8), NÃO Aluguel (5.1).
+
+** PADRÃO 7 — CONDOMÍNIO E OCUPAÇÃO **
+- Condomínio, taxa condominial, IPTU, prestação de contas condominial → 5.1 Aluguel e Condomínio
+- Se a descrição contém "condomínio" ou "condominial" → SEMPRE 5.1
+
 === PROIBIÇÕES ===
 - NÃO classifique impostos (Simples, ISS, ICMS, PIS, COFINS, IRPJ) como 4.x — use 8.x
 - NÃO classifique INSS Patronal como 8.x — use 4.6 (Despesas com Pessoal)
 - NÃO classifique salários como 5.x — use 4.1
 - NÃO classifique CMV (mercadoria, estoque, frete, embalagem) como 5.x ou 6.x — use 3.x
 - NÃO classifique a mesma descrição em categorias diferentes em lotes distintos
+- NÃO classifique Uber/99/táxi como Telecomunicações — use 5.8
+- NÃO classifique Plano de Saúde como Telecomunicações — use 4.3
+- NÃO classifique FGTS como Salários — use 4.2
+- NÃO classifique Internet como Energia e Água — use 5.3
+- NÃO classifique Estacionamento como Aluguel — use 5.8
+- NÃO classifique Cursos/Treinamentos como Material de Escritório — use 4.5
+- NÃO classifique ISS/PIS/COFINS como Simples Nacional/DAS — use 8.2 ou 8.4
 
 === REGRA CRÍTICA: CONSISTÊNCIA TIPO vs CATEGORIA (OBRIGATÓRIA) ===
 - Transações com Tipo=EXPENSE DEVEM OBRIGATORIAMENTE receber categorias de DESPESA (códigos 3.x a 9.x). NUNCA use 1.x ou 2.x para despesas.
@@ -284,7 +344,7 @@ ${sectorRules}
 - Se a descrição parecer ambígua, SEMPRE respeite o campo Tipo da transação.
 
 === USE APENAS OS CÓDIGOS DO PLANO DE CONTAS ACIMA ===
-Não invente códigos. Use APENAS os códigos listados no plano de contas fornecido.`;
+Não invente códigos. Use APENAS os códigos listados no plano de contas.`;
 
   const userPrompt = `CATEGORIAS DISPONÍVEIS:
 ${categoryList}${previousContext}
