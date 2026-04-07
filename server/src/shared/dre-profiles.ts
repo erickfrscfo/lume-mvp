@@ -98,6 +98,23 @@ export const DRE_PROFILES: Record<string, DREProfile> = {
   },
 
   // ============================================
+  // E-COMMERCE (FRENTE 2: novo setor)
+  // CMV = Mercadoria + Frete + Embalagens + Taxas de Marketplace
+  // ============================================
+  ECOMMERCE: {
+    sectorKey: "ECOMMERCE",
+    sectorLabel: "E-commerce",
+    directCostLabel: "CMV (Custo da Mercadoria Vendida)",
+    grossProfitLabel: "Lucro Bruto",
+    directCostCodes: [
+      "3.",   // Todos os custos diretos (matéria-prima, mercadoria, frete, embalagens)
+      "7.3",  // Taxas de Cartão/Maquininha (marketplace fees)
+    ],
+    excludeFromDirectCost: [],
+    taxCodes: ["8."],
+  },
+
+  // ============================================
   // MISTO / OUTROS (DEFAULT)
   // Usa todos os custos diretos 3.x
   // ============================================
@@ -148,5 +165,6 @@ export const AVAILABLE_SECTORS = [
   { value: "SERVICOS", label: "Serviços / Consultoria" },
   { value: "INDUSTRIA", label: "Indústria / Manufatura" },
   { value: "SAAS", label: "SaaS / Tecnologia" },
+  { value: "ECOMMERCE", label: "E-commerce" },
   { value: "MISTO", label: "Misto / Outros" },
 ];
