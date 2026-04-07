@@ -7,6 +7,13 @@ import { CompanySector } from "@prisma/client";
 
 const VALID_SECTORS: CompanySector[] = ["VAREJO", "SERVICOS", "INDUSTRIA", "SAAS", "ECOMMERCE", "MISTO"];
 
+interface CustomCategoryInput {
+  code: string;
+  name: string;
+  type: "INCOME" | "EXPENSE";
+  parentCode: string | null;
+}
+
 interface RegisterInput {
   name: string;
   username: string;
@@ -18,6 +25,7 @@ interface RegisterInput {
     sector: string;
     activity?: string;
     useCustomChart?: boolean;
+    customCategories?: CustomCategoryInput[];
   };
 }
 
@@ -37,17 +45,37 @@ function generateCompanyCode(companyName: string): string {
 }
 
 /**
- * Copia o plano de contas padrão (tabela Category global) para a tabela CompanyCategory
- * da empresa recém-criada. Usado quando useCustomChart = true e o admin quer partir
- * do plano padrão como base para customizar.
+ * Salva as categorias customizadas enviadas pelo admin na tabela CompanyCategory.
+ * Se nenhuma categoria customizada for enviada mas useCustomChart = true,
+ * copia o plano padrão global como fallback.
  */
-async function copyDefaultChartToCompany(companyId: string): Promise<void> {
+async function saveCustomCategories(
+  companyId: string,
+  customCategories?: CustomCategoryInput[]
+): Promise<number> {
+  if (customCategories && customCategories.length > 0) {
+    // Salvar as categorias que o admin editou no frontend
+    for (const cat of customCategories) {
+      await prisma.companyCategory.create({
+        data: {
+          companyId,
+          code: cat.code,
+          name: cat.name,
+          type: cat.type as any,
+          parentCode: cat.parentCode,
+          isActive: true,
+        },
+      });
+    }
+    return customCategories.length;
+  }
+
+  // Fallback: copiar plano padrão global
   const globalCategories = await prisma.category.findMany({
     orderBy: { code: "asc" },
   });
 
   for (const cat of globalCategories) {
-    // Determinar parentCode a partir do parent global
     let parentCode: string | null = null;
     if (cat.parentId) {
       const parent = globalCategories.find((c) => c.id === cat.parentId);
@@ -65,6 +93,8 @@ async function copyDefaultChartToCompany(companyId: string): Promise<void> {
       },
     });
   }
+
+  return globalCategories.length;
 }
 
 export async function register(input: RegisterInput) {
@@ -129,9 +159,13 @@ export async function register(input: RegisterInput) {
     return { user, company };
   });
 
-  // Se useCustomChart = true, copiar plano padrão como base
+  // Se useCustomChart = true, salvar categorias customizadas
+  let customCategoriesCount = 0;
   if (useCustomChart) {
-    await copyDefaultChartToCompany(result.company.id);
+    customCategoriesCount = await saveCustomCategories(
+      result.company.id,
+      input.company.customCategories
+    );
   }
 
   // Gerar token
@@ -161,6 +195,7 @@ export async function register(input: RegisterInput) {
       sector: result.company.sector,
       activity: result.company.activity,
       useCustomChart: result.company.useCustomChart,
+      customCategoriesCount,
     },
   };
 }

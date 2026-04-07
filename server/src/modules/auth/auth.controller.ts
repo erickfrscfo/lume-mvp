@@ -5,6 +5,13 @@ import { authMiddleware, adminKeyMiddleware } from "./auth.middleware.js";
 
 const router = Router();
 
+const customCategorySchema = z.object({
+  code: z.string().min(1, "Código é obrigatório"),
+  name: z.string().min(1, "Nome é obrigatório"),
+  type: z.enum(["INCOME", "EXPENSE"]),
+  parentCode: z.string().nullable(),
+});
+
 const registerSchema = z.object({
   name: z.string().min(2, "Nome deve ter pelo menos 2 caracteres"),
   username: z
@@ -19,6 +26,7 @@ const registerSchema = z.object({
     sector: z.string().min(2, "Setor deve ter pelo menos 2 caracteres"),
     activity: z.string().optional(),
     useCustomChart: z.boolean().optional(),
+    customCategories: z.array(customCategorySchema).optional(),
   }),
 });
 
