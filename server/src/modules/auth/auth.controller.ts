@@ -17,6 +17,8 @@ const registerSchema = z.object({
     name: z.string().min(2, "Razão social deve ter pelo menos 2 caracteres"),
     cnpj: z.string().min(14, "CNPJ inválido"),
     sector: z.string().min(2, "Setor deve ter pelo menos 2 caracteres"),
+    activity: z.string().optional(),
+    useCustomChart: z.boolean().optional(),
   }),
 });
 

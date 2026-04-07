@@ -15,28 +15,53 @@ enum CompanySector {
   SERVICOS    // Serviços / Consultoria
   INDUSTRIA   // Indústria / Manufatura
   SAAS        // SaaS / Tecnologia
+  ECOMMERCE   // E-commerce
   MISTO       // Misto / Outros
 }
 
 model Company {
-  id        String        @id @default(cuid())
-  name      String
-  cnpj      String        @unique
-  sector    CompanySector @default(MISTO)
-  code      String        @unique
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  id             String        @id @default(cuid())
+  name           String
+  cnpj           String        @unique
+  sector         CompanySector @default(MISTO)
+  activity       String?       // Atividade descritiva: "consultoria tributária", "varejo de moda", etc.
+  useCustomChart Boolean       @default(false) // Se true, usa CompanyCategory ao invés de Category global
+  code           String        @unique
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
-  users          User[]
-  transactions   Transaction[]
-  scenarios      Scenario[]
-  alerts         Alert[]
-  counterparties Counterparty[]
-  documents      Document[]
-  aiInsights     AiInsight[]
+  users              User[]
+  transactions       Transaction[]
+  scenarios          Scenario[]
+  alerts             Alert[]
+  counterparties     Counterparty[]
+  documents          Document[]
+  aiInsights         AiInsight[]
+  companyCategories  CompanyCategory[]
 
   @@index([code])
   @@index([cnpj])
+}
+
+// ============================================
+// PLANO DE CONTAS CUSTOMIZADO POR EMPRESA
+// ============================================
+model CompanyCategory {
+  id         String   @id @default(cuid())
+  companyId  String
+  code       String   // ex: "1.2", "4.6"
+  name       String   // ex: "Prestação de Serviços"
+  type       TransactionType // "INCOME" ou "EXPENSE"
+  parentCode String?  // código do grupo pai (ex: "1" para "1.2")
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, code])
+  @@index([companyId])
+  @@index([companyId, isActive])
 }
 
 // ============================================
@@ -95,7 +120,7 @@ enum UploadStatus {
 }
 
 // ============================================
-// CATEGORIAS CONTÁBEIS
+// CATEGORIAS CONTÁBEIS (GLOBAIS)
 // ============================================
 model Category {
   id          String          @id @default(cuid())

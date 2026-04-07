@@ -5,7 +5,7 @@ import { env } from "../../config/env.js";
 import { AppError, UnauthorizedError } from "../../shared/errors.js";
 import { CompanySector } from "@prisma/client";
 
-const VALID_SECTORS: CompanySector[] = ["VAREJO", "SERVICOS", "INDUSTRIA", "SAAS", "MISTO"];
+const VALID_SECTORS: CompanySector[] = ["VAREJO", "SERVICOS", "INDUSTRIA", "SAAS", "ECOMMERCE", "MISTO"];
 
 interface RegisterInput {
   name: string;
@@ -16,6 +16,8 @@ interface RegisterInput {
     name: string;
     cnpj: string;
     sector: string;
+    activity?: string;
+    useCustomChart?: boolean;
   };
 }
 
@@ -32,6 +34,37 @@ function generateCompanyCode(companyName: string): string {
     .toUpperCase();
   const suffix = Math.floor(100 + Math.random() * 900);
   return `${prefix}${suffix}`;
+}
+
+/**
+ * Copia o plano de contas padrão (tabela Category global) para a tabela CompanyCategory
+ * da empresa recém-criada. Usado quando useCustomChart = true e o admin quer partir
+ * do plano padrão como base para customizar.
+ */
+async function copyDefaultChartToCompany(companyId: string): Promise<void> {
+  const globalCategories = await prisma.category.findMany({
+    orderBy: { code: "asc" },
+  });
+
+  for (const cat of globalCategories) {
+    // Determinar parentCode a partir do parent global
+    let parentCode: string | null = null;
+    if (cat.parentId) {
+      const parent = globalCategories.find((c) => c.id === cat.parentId);
+      parentCode = parent?.code || null;
+    }
+
+    await prisma.companyCategory.create({
+      data: {
+        companyId,
+        code: cat.code,
+        name: cat.name,
+        type: cat.type,
+        parentCode,
+        isActive: true,
+      },
+    });
+  }
 }
 
 export async function register(input: RegisterInput) {
@@ -65,6 +98,8 @@ export async function register(input: RegisterInput) {
   // Gerar código da empresa
   const companyCode = generateCompanyCode(input.company.name);
 
+  const useCustomChart = input.company.useCustomChart ?? false;
+
   // Criar empresa e usuário em transação
   const result = await prisma.$transaction(async (tx) => {
     const company = await tx.company.create({
@@ -74,6 +109,8 @@ export async function register(input: RegisterInput) {
         sector: (VALID_SECTORS.includes(input.company.sector as CompanySector)
           ? input.company.sector
           : "MISTO") as CompanySector,
+        activity: input.company.activity || null,
+        useCustomChart,
         code: companyCode,
       },
     });
@@ -91,6 +128,11 @@ export async function register(input: RegisterInput) {
 
     return { user, company };
   });
+
+  // Se useCustomChart = true, copiar plano padrão como base
+  if (useCustomChart) {
+    await copyDefaultChartToCompany(result.company.id);
+  }
 
   // Gerar token
   const token = jwt.sign(
@@ -117,6 +159,8 @@ export async function register(input: RegisterInput) {
       name: result.company.name,
       code: result.company.code,
       sector: result.company.sector,
+      activity: result.company.activity,
+      useCustomChart: result.company.useCustomChart,
     },
   };
 }
@@ -192,6 +236,8 @@ export async function getMe(userId: string) {
       name: user.company.name,
       code: user.company.code,
       sector: user.company.sector,
+      activity: user.company.activity,
+      useCustomChart: user.company.useCustomChart,
     },
   };
 }
