@@ -2,6 +2,11 @@ import OpenAI from "openai";
 import { env } from "../../config/env.js";
 import { prisma } from "../../shared/database.js";
 import { AiInteractionType } from "@prisma/client";
+import {
+  resolveCompanyCategories,
+  formatCategoriesForPrompt,
+  type ResolvedCategory,
+} from "../../shared/resolve-categories.js";
 
 const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
@@ -24,6 +29,12 @@ interface AiResponse {
   };
   model: string;
   latencyMs: number;
+}
+
+interface CompanyContext {
+  sector: string;
+  activity?: string | null;
+  useCustomChart: boolean;
 }
 
 // Função central que faz todas as chamadas à OpenAI
@@ -74,15 +85,149 @@ export async function callAi(options: AiCallOptions): Promise<AiResponse> {
   return { content, tokenUsage, model, latencyMs };
 }
 
-// Classificar transações
+// ============================================
+// HELPER: Buscar contexto da empresa
+// ============================================
+async function getCompanyContext(companyId: string): Promise<CompanyContext> {
+  const company = await prisma.company.findUnique({
+    where: { id: companyId },
+    select: { sector: true, activity: true, useCustomChart: true },
+  });
+  return {
+    sector: company?.sector || "MISTO",
+    activity: company?.activity,
+    useCustomChart: company?.useCustomChart ?? false,
+  };
+}
+
+// ============================================
+// HELPER: Gerar regras por setor + atividade
+// ============================================
+function buildSectorRules(sector: string, activity?: string | null): string {
+  let rules = "";
+
+  switch (sector) {
+    case "SERVICOS":
+      rules = `
+** EMPRESA DE SERVIÇOS/CONSULTORIA (PRIORIDADE ALTA) **
+- Receita de projeto de consultoria, assessoria, mentoria → 1.2
+- Receita recorrente (retainer, mensalidade de serviço) → 1.3
+- Salário de consultor que trabalha DIRETAMENTE em projetos de clientes → 3.3 (CSP)
+- Subcontratação de consultor externo para projeto de cliente → 3.6 (CSP)
+- Viagem/deslocamento PARA projeto de cliente → 3.4 (CSP)
+- Salário de equipe administrativa/backoffice → 4.1
+- Freelancer/PJ alocado em projeto de cliente → 4.4 (CSP)
+- Software usado DIRETAMENTE na entrega ao cliente → 3.6
+- Software administrativo (ERP, CRM, Slack) → 5.4`;
+      break;
+
+    case "SAAS":
+      rules = `
+** EMPRESA SaaS/TECNOLOGIA (PRIORIDADE ALTA) **
+- Receita de assinatura/SaaS → 1.3
+- Receita de implementação/setup → 1.2
+- Servidores, cloud (AWS, Azure, GCP) → 5.4 (Custo de Receita)
+- Salário de dev/suporte que mantém o produto → 3.3 (Custo de Receita)
+- Freelancer de desenvolvimento → 3.6 (Custo de Receita)
+- APIs e serviços terceiros (Stripe, Twilio, etc.) → 3.6
+- Salário de equipe administrativa → 4.1`;
+      break;
+
+    case "INDUSTRIA":
+      rules = `
+** EMPRESA INDUSTRIAL/MANUFATURA (PRIORIDADE ALTA) **
+- Matéria-prima, insumos de produção → 3.1 (CPV)
+- Mão de obra direta da fábrica → 3.3 (CPV)
+- Embalagens de produção → 3.5 (CPV)
+- Frete de entrega → 3.4 (CPV)
+- Serviços terceirizados de produção → 3.6 (CPV)
+- Salário administrativo → 4.1`;
+      break;
+
+    case "ECOMMERCE":
+      rules = `
+** EMPRESA E-COMMERCE (PRIORIDADE ALTA) **
+- Venda de produtos online → 1.1
+- Compra de mercadoria, estoque → 3.2 (CMV)
+- Frete de entrega ao cliente → 3.4 (CMV)
+- Embalagens para envio → 3.5 (CMV)
+- Perdas e avarias de estoque → 3.2 (CMV)
+- Taxas de marketplace (Mercado Livre, Shopee, Amazon) → 7.3
+- Plataforma de e-commerce (Shopify, VTEX, Nuvemshop) → 5.4
+- Gateway de pagamento (Stripe, PagSeguro, Mercado Pago) → 7.3
+- Marketing digital (Google Ads, Facebook Ads) → 6.1
+- Logística reversa (devoluções) → 3.4
+- Salário administrativo → 4.1`;
+      break;
+
+    default: // VAREJO, MISTO
+      rules = `
+** EMPRESA DE VAREJO/COMÉRCIO **
+- Compra de mercadoria, estoque → 3.2 (CMV)
+- Perdas e avarias de estoque → 3.2 (CMV)
+- Frete sobre compras/vendas → 3.4 (CMV)
+- Embalagens → 3.5 (CMV)`;
+      break;
+  }
+
+  // Adicionar contexto de atividade se disponível
+  if (activity) {
+    rules += `\n\n** ATIVIDADE PRINCIPAL DA EMPRESA: "${activity}" **
+Use essa informação para desambiguar classificações. Exemplo:
+- Se a atividade é "consultoria tributária", receitas de serviço provavelmente são 1.2 (Prestação de Serviços)
+- Se a atividade é "varejo de moda", compras de mercadoria são 3.2 (Mercadoria para Revenda)
+- Priorize categorias que façam sentido para essa atividade específica.`;
+  }
+
+  return rules;
+}
+
+// ============================================
+// HELPER: Montar plano de contas para o prompt
+// ============================================
+function buildChartOfAccountsPrompt(categories: ResolvedCategory[]): string {
+  const incomeGroups = categories.filter(c => c.type === "INCOME" && !c.parentCode);
+  const expenseGroups = categories.filter(c => c.type === "EXPENSE" && !c.parentCode);
+
+  let text = "=== PLANO DE CONTAS COMPLETO ===\n\n";
+
+  text += "RECEITAS:\n";
+  for (const group of incomeGroups) {
+    text += `- ${group.code} ${group.name} (genérico)\n`;
+    const children = categories.filter(c => c.parentCode === group.code && c.type === "INCOME");
+    for (const child of children) {
+      text += `- ${child.code} ${child.name}\n`;
+    }
+  }
+
+  text += "\nDESPESAS:\n";
+  for (const group of expenseGroups) {
+    text += `- ${group.code} ${group.name} (genérico)\n`;
+    const children = categories.filter(c => c.parentCode === group.code && c.type === "EXPENSE");
+    for (const child of children) {
+      text += `- ${child.code} ${child.name}\n`;
+    }
+  }
+
+  return text;
+}
+
+// ============================================
+// Classificar transações — CONTEXTUALIZADO POR EMPRESA
+// ============================================
 export async function classifyTransactions(
   userId: string,
+  companyId: string,
   transactions: Array<{ id: string; description: string; amount: number; type: string }>,
-  categories: Array<{ code: string; name: string; type: string }>,
-  companySector?: string,
   previousClassifications?: Array<{ description: string; categoryCode: string }>
 ) {
-  const categoryList = categories
+  // Buscar contexto da empresa
+  const companyCtx = await getCompanyContext(companyId);
+
+  // Resolver categorias (customizadas ou globais)
+  const resolvedCategories = await resolveCompanyCategories(companyId);
+
+  const categoryList = resolvedCategories
     .map((c) => `${c.code} - ${c.name} (${c.type})`)
     .join("\n");
 
@@ -93,7 +238,6 @@ export async function classifyTransactions(
   // Construir contexto de classificações anteriores para consistência entre lotes
   let previousContext = "";
   if (previousClassifications && previousClassifications.length > 0) {
-    // Deduplica: pega apenas uma classificação por descrição única
     const uniqueMap = new Map<string, string>();
     previousClassifications.forEach((pc) => {
       if (!uniqueMap.has(pc.description)) {
@@ -106,6 +250,12 @@ export async function classifyTransactions(
     previousContext = `\n\n=== CLASSIFICAÇÕES JÁ REALIZADAS (OBRIGATÓRIO SEGUIR) ===\nAs transações abaixo já foram classificadas em lotes anteriores.\nVocê DEVE usar EXATAMENTE o mesmo código para descrições iguais ou muito similares:\n${contextLines}`;
   }
 
+  // Montar plano de contas dinâmico
+  const chartPrompt = buildChartOfAccountsPrompt(resolvedCategories);
+
+  // Montar regras por setor + atividade
+  const sectorRules = buildSectorRules(companyCtx.sector, companyCtx.activity);
+
   const systemPrompt = `Você é um contador especializado em classificação contábil para PMEs brasileiras.
 Classifique cada transação abaixo em uma das categorias fornecidas.
 Retorne APENAS um JSON array com objetos contendo: id, categoryCode, confidence (0-1).
@@ -116,119 +266,10 @@ Trasações com a MESMA descrição DEVEM SEMPRE receber o MESMO código de cate
 Exemplo: se "Consultoria técnica" é classificada como 1.2, TODAS as ocorrências
 de "Consultoria técnica" devem ser 1.2. Nunca alterne entre categorias diferentes.
 
-=== PLANO DE CONTAS COMPLETO ===
-
-RECEITAS:
-- 1.0 Receita Operacional (genérico)
-- 1.1 Venda de Produtos (produtos físicos, mercadorias)
-- 1.2 Prestação de Serviços (consultoria, projetos, horas técnicas, assessoria, treinamento)
-- 1.3 Assinaturas/Recorrência (mensalidades, retainers, contratos recorrentes)
-- 1.4 Comissões Recebidas (intermediação, indicação)
-- 2.0 Receita Não Operacional (genérico)
-- 2.1 Rendimentos Financeiros (juros recebidos, rendimento de aplicação, CDB, poupança)
-- 2.2 Aluguéis Recebidos (imóvel alugado, sublocação)
-- 2.3 Venda de Ativos (venda de equipamento, veículo, móvel usado)
-- 2.4 Empréstimos Recebidos (empréstimo bancário, aporte de sócio)
-- 2.5 Outras Receitas (reembolsos recebidos, receitas diversas)
-
-CUSTOS DIRETOS (CMV) - GRUPO 3.x:
-- 3.0 Custos Diretos (genérico)
-- 3.1 Matéria-Prima (insumos de produção)
-- 3.2 Mercadoria para Revenda (compra de estoque, perdas e avarias de estoque)
-- 3.3 Mão de Obra Direta (salário de consultor alocado em projeto, freelancer de projeto, subcontratação para entrega ao cliente)
-- 3.4 Frete sobre Vendas (frete de entrega, frete sobre compras, logística, deslocamento para projeto do cliente)
-- 3.5 Embalagens (embalagens, caixas)
-- 3.6 Serviços de Terceiros - Produção (subcontratação de consultores, terceirização de serviço para cliente)
-
-DESPESAS COM PESSOAL - GRUPO 4.x:
-- 4.0 Despesas com Pessoal (genérico)
-- 4.1 Salários e Pró-Labore (folha de pagamento, salários, prolabore, pró-labore)
-- 4.2 Encargos Trabalhistas (FGTS, INSS funcionário, férias, 13º, rescisão)
-- 4.3 Benefícios (vale transporte, vale refeição, plano de saúde, vale alimentação)
-- 4.4 Prestadores PJ (pagamento a PJ, nota fiscal de serviço de prestador fixo)
-- 4.5 Treinamento e Capacitação (curso, certificação, workshop, evento)
-- 4.6 INSS Patronal (INSS patronal, contribuição previdenciária patronal, INSS empresa)
-
-DESPESAS OPERACIONAIS - GRUPO 5.x:
-- 5.0 Despesas Operacionais (genérico)
-- 5.1 Aluguel e Condomínio (aluguel escritório, aluguel loja, condomínio, IPTU)
-- 5.2 Energia e Água (conta de energia, conta de água, conta de luz, gás)
-- 5.3 Telecomunicações (internet, telefone, celular corporativo)
-- 5.4 Software e Assinaturas (ERP, CRM, SaaS, licença de software, sistema, Slack, Zoom)
-- 5.5 Material de Escritório (papelaria, toner)
-- 5.6 Manutenção e Reparos (manutenção de equipamento, reparo, conserto)
-- 5.7 Seguros (seguro empresarial, seguro de vida)
-- 5.8 Transporte e Deslocamento (uber, táxi, estacionamento, combustível)
-
-DESPESAS COMERCIAIS - GRUPO 6.x:
-- 6.0 Despesas Comerciais (genérico)
-- 6.1 Marketing Digital (Google Ads, Facebook Ads, Instagram Ads, LinkedIn Ads, SEO)
-- 6.2 Marketing Offline (evento, feira, material impresso)
-- 6.3 Comissões de Vendas (comissão de vendedor, bônus de vendas)
-- 6.4 Ferramentas de Vendas (CRM de vendas, ferramenta de prospecção)
-- 6.5 Brindes e Amostras (brinde corporativo, amostra grátis)
-
-DESPESAS FINANCEIRAS - GRUPO 7.x:
-- 7.0 Despesas Financeiras (genérico)
-- 7.1 Juros de Empréstimos (juros bancários, juros de financiamento)
-- 7.2 Tarifas Bancárias (tarifa de conta, TED, DOC, Pix empresarial)
-- 7.3 Taxas de Cartão/Maquininha (taxa de cartão, taxa Stripe, taxa PagSeguro)
-- 7.4 Multas e Juros Pagos (multa por atraso, juros moratórios)
-- 7.5 IOF e Encargos (IOF, encargos financeiros)
-
-IMPOSTOS E TRIBUTOS - GRUPO 8.x:
-- 8.0 Impostos e Tributos (genérico)
-- 8.1 Simples Nacional / DAS (Simples Nacional, DAS, guia DAS)
-- 8.2 ISS (ISS, imposto sobre serviço)
-- 8.3 ICMS (ICMS)
-- 8.4 PIS/COFINS (PIS, COFINS)
-- 8.5 IRPJ/CSLL (IRPJ, CSLL, imposto de renda pessoa jurídica)
-- 8.6 [REMOVIDO — INSS Patronal movido para 4.6]
-- 8.7 Outros Tributos (taxa de licença, alvará, outros tributos)
-
-INVESTIMENTOS (CAPEX) - GRUPO 9.x:
-- 9.1 Equipamentos e Máquinas (computador, notebook, servidor, impressora)
-- 9.2 Móveis e Utensílios (mesa, cadeira, armário)
-- 9.3 Veículos (carro, moto, van)
-- 9.4 Desenvolvimento de Software (desenvolvimento de sistema próprio, app)
-- 9.5 Obras e Reformas (reforma do escritório, obra)
+${chartPrompt}
 
 === REGRAS ESPECÍFICAS POR SETOR ===
-${companySector === "SERVICOS" ? `
-** EMPRESA DE SERVIÇOS/CONSULTORIA (PRIORIDADE ALTA) **
-- Receita de projeto de consultoria, assessoria, mentoria → 1.2
-- Receita recorrente (retainer, mensalidade de serviço) → 1.3
-- Salário de consultor que trabalha DIRETAMENTE em projetos de clientes → 3.3 (CSP)
-- Subcontratação de consultor externo para projeto de cliente → 3.6 (CSP)
-- Viagem/deslocamento PARA projeto de cliente → 3.4 (CSP)
-- Salário de equipe administrativa/backoffice → 4.1
-- Freelancer/PJ alocado em projeto de cliente → 4.4 (CSP)
-- Software usado DIRETAMENTE na entrega ao cliente → 3.6
-- Software administrativo (ERP, CRM, Slack) → 5.4
-` : companySector === "SAAS" ? `
-** EMPRESA SaaS/TECNOLOGIA (PRIORIDADE ALTA) **
-- Receita de assinatura/SaaS → 1.3
-- Receita de implementação/setup → 1.2
-- Servidores, cloud (AWS, Azure, GCP) → 5.4 (Custo de Receita)
-- Salário de dev/suporte que mantém o produto → 3.3 (Custo de Receita)
-- Freelancer de desenvolvimento → 3.6 (Custo de Receita)
-- APIs e serviços terceiros (Stripe, Twilio, etc.) → 3.6
-- Salário de equipe administrativa → 4.1
-` : companySector === "INDUSTRIA" ? `
-** EMPRESA INDUSTRIAL/MANUFATURA (PRIORIDADE ALTA) **
-- Matéria-prima, insumos de produção → 3.1 (CPV)
-- Mão de obra direta da fábrica → 3.3 (CPV)
-- Embalagens de produção → 3.5 (CPV)
-- Frete de entrega → 3.4 (CPV)
-- Serviços terceirizados de produção → 3.6 (CPV)
-- Salário administrativo → 4.1
-` : `
-** EMPRESA DE VAREJO/COMÉRCIO **
-- Compra de mercadoria, estoque → 3.2 (CMV)
-- Perdas e avarias de estoque → 3.2 (CMV)
-- Frete sobre compras/vendas → 3.4 (CMV)
-- Embalagens → 3.5 (CMV)
-`}
+${sectorRules}
 
 === PROIBIÇÕES ===
 - NÃO classifique impostos (Simples, ISS, ICMS, PIS, COFINS, IRPJ) como 4.x — use 8.x
@@ -240,13 +281,18 @@ ${companySector === "SERVICOS" ? `
 === REGRA CRÍTICA: CONSISTÊNCIA TIPO vs CATEGORIA (OBRIGATÓRIA) ===
 - Transações com Tipo=EXPENSE DEVEM OBRIGATORIAMENTE receber categorias de DESPESA (códigos 3.x a 9.x). NUNCA use 1.x ou 2.x para despesas.
 - Transações com Tipo=INCOME DEVEM OBRIGATORIAMENTE receber categorias de RECEITA (códigos 1.x ou 2.x). NUNCA use 3.x a 9.x para receitas.
-- Se a descrição parecer ambígua, SEMPRE respeite o campo Tipo da transação.`;
+- Se a descrição parecer ambígua, SEMPRE respeite o campo Tipo da transação.
+
+=== USE APENAS OS CÓDIGOS DO PLANO DE CONTAS ACIMA ===
+Não invente códigos. Use APENAS os códigos listados no plano de contas fornecido.`;
 
   const userPrompt = `CATEGORIAS DISPONÍVEIS:
 ${categoryList}${previousContext}
 
 TRANSAÇÕES PARA CLASSIFICAR:
-${transactionList}`;
+${transactionList}
+
+Classifique cada transação. Retorne APENAS o JSON array.`;
 
   const response = await callAi({
     userId,
@@ -257,7 +303,6 @@ ${transactionList}`;
   });
 
   try {
-    // Extrair JSON da resposta
     const jsonMatch = response.content.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
@@ -270,11 +315,12 @@ ${transactionList}`;
 }
 
 // ============================================
-// NOVA FUNÇÃO: Classificar tipo de custo (fixo/variável)
+// Classificar tipo de custo (fixo/variável)
 // ============================================
 export async function classifyCostType(
   userId: string,
-  transactions: Array<{ id: string; description: string; amount: number; categoryName?: string }>
+  transactions: Array<{ id: string; description: string; amount: number; categoryName?: string }>,
+  companyActivity?: string | null
 ) {
   const transactionList = transactions
     .map((t) => {
@@ -282,6 +328,10 @@ export async function classifyCostType(
       return `ID: ${t.id} | Descrição: "${t.description}" | Valor: R$ ${t.amount}${category}`;
     })
     .join("\n");
+
+  const activityContext = companyActivity
+    ? `\n\n=== CONTEXTO DA EMPRESA ===\nAtividade principal: "${companyActivity}"\nUse essa informação para desambiguar custos. Exemplo: para uma empresa de consultoria, "viagem a cliente" pode ser custo variável (proporcional a projetos).`
+    : "";
 
   const systemPrompt = `Você é um analista financeiro especializado em classificação de custos para PMEs brasileiras.
 
@@ -332,6 +382,7 @@ Se vender mais, esse custo aumenta. Se vender menos, diminui.
 - "Sistemas e ERP" → FIXO
 - "Conta de energia" → FIXO (uso geral, não varia com vendas)
 - "Conta de agua" → FIXO
+${activityContext}
 
 === REGRAS ===
 1. Transações com a mesma descrição = mesmo tipo de custo, SEMPRE
@@ -363,13 +414,11 @@ Classifique cada uma como FIXO ou VARIAVEL com base nas definições acima.`;
   });
 
   try {
-    // Extrair JSON da resposta
     const jsonMatch = response.content.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
-      // Validar estrutura
-      return parsed.filter((item: any) => 
-        item.id && 
+      return parsed.filter((item: any) =>
+        item.id &&
         (item.costType === "FIXO" || item.costType === "VARIAVEL") &&
         typeof item.confidence === "number"
       );
@@ -381,16 +430,22 @@ Classifique cada uma como FIXO ou VARIAVEL com base nas definições acima.`;
   }
 }
 
-/// Explicar métrica (Explica pra Mim)
+/// Explicar métrica (Explica pra Mim) — com contexto de setor/atividade
 export async function explainMetric(
   userId: string,
   metric: string,
   value: string,
-  financialContext: string
+  financialContext: string,
+  companyContext?: { sector?: string; activity?: string | null }
 ) {
+  const sectorInfo = companyContext
+    ? `\n\nSETOR DA EMPRESA: ${companyContext.sector || "Não informado"}${companyContext.activity ? `\nATIVIDADE PRINCIPAL: ${companyContext.activity}` : ""}\nUse essas informações para contextualizar benchmarks e recomendações específicas do setor.`
+    : "";
+
   const systemPrompt = `Você é o Lume, um CFO virtual que traduz finanças para empreendedores que NÃO são da área financeira.
 
 Sua missão é transformar números abstratos em narrativas acionáveis. O empreendedor não precisa de jargões financeiros — ele precisa saber se o negócio está saudável.
+${sectorInfo}
 
 ## INSTRUÇÕES CRÍTICAS PARA PRECISÃO:
 
@@ -448,15 +503,21 @@ Explique de forma simples, prática e personalizada para este negócio. Use os d
   }
 }
 
-// Chat da Reunião Executiva
+// Chat da Reunião Executiva — com contexto de setor/atividade
 export async function chat(
   userId: string,
   message: string,
   financialContext: string,
-  chatHistory: Array<{ role: string; content: string }>
+  chatHistory: Array<{ role: string; content: string }>,
+  companyContext?: { sector?: string; activity?: string | null }
 ) {
+  const sectorInfo = companyContext
+    ? `\n\nSETOR DA EMPRESA: ${companyContext.sector || "Não informado"}${companyContext.activity ? `\nATIVIDADE PRINCIPAL: ${companyContext.activity}` : ""}\nUse essas informações para dar respostas mais relevantes ao contexto do negócio.`
+    : "";
+
   const systemPrompt = `Você é o Lume, um CFO virtual inteligente. Seu papel é responder perguntas
 financeiras de forma clara e acessível para um empreendedor sem formação em finanças.
+${sectorInfo}
 
 REGRAS:
 - Use linguagem simples e direta
@@ -502,15 +563,20 @@ export async function scenarioChat(
   userId: string,
   message: string,
   financialContext: string,
-  chatHistory: Array<{ role: string; content: string }>
+  chatHistory: Array<{ role: string; content: string }>,
+  companyContext?: { sector?: string; activity?: string | null }
 ) {
+  const sectorInfo = companyContext
+    ? `\nSETOR DA EMPRESA: ${companyContext.sector || "Não informado"}${companyContext.activity ? `\nATIVIDADE PRINCIPAL: ${companyContext.activity}` : ""}`
+    : "";
+
   const systemPrompt = `Você é o Lume, um CFO virtual que ajuda empreendedores a simular cenários financeiros.
 Seu objetivo é criar simulações realistas e completas para o fluxo de caixa da empresa.
+${sectorInfo}
 
 IMPORTANTE — LINGUAGEM:
 - Use linguagem SIMPLES e ACESSÍVEL. O usuário NÃO é da área financeira.
-- NUNCA use termos técnicos sem explicar: nada de "ramp-up", "ROI", "CAPEX", "payback", "break-even", "churn", "burn rate".
-- Em vez de "ramp-up", diga "período de adaptação até começar a trazer resultado".
+- NUNCA use termos técnicos sem explicar. Exemplos:
 - Em vez de "ROI", diga "retorno sobre o que foi investido".
 - Em vez de "CAPEX", diga "investimento inicial".
 - Em vez de "payback", diga "tempo para recuperar o investimento".

@@ -6,6 +6,7 @@ import { authMiddleware } from "../auth/auth.middleware.js";
 import { prisma } from "../../shared/database.js";
 import * as aiService from "../ai/ai.service.js";
 import { generateAlerts } from "../alerts/alerts.controller.js";
+import { resolveCompanyCategories } from "../../shared/resolve-categories.js";
 
 const router = Router();
 
@@ -203,22 +204,20 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
 
       if (paymentDate && paymentDate > todayEnd) {
         console.warn(`[Upload] Linha ${line}: data_pagamento futura (${paymentDate.toISOString()}) ignorada. Transação será PENDING.`);
-        paymentDate = undefined; // Ignorar data futura, manter como PENDING
+        paymentDate = undefined;
       }
       if (receiptDate && receiptDate > todayEnd) {
         console.warn(`[Upload] Linha ${line}: data_recebimento futura (${receiptDate.toISOString()}) ignorada. Transação será PENDING.`);
-        receiptDate = undefined; // Ignorar data futura, manter como PENDING
+        receiptDate = undefined;
       }
 
-      // STATUS DERIVADO: se data de pagamento/recebimento preenchida E válida = COMPLETED, senão = PENDING
-      // Também aceita coluna status legada para retrocompatibilidade
+      // STATUS DERIVADO
       let status = "PENDING";
       if (tipo_transacao === "EXPENSE" && paymentDate) {
         status = "COMPLETED";
       } else if (tipo_transacao === "INCOME" && receiptDate) {
         status = "COMPLETED";
       } else {
-        // Retrocompatibilidade: aceitar coluna status se existir
         const statusStr = (record.status || record.Status || record.STATUS || "").toUpperCase();
         const statusMap: Record<string, string> = {
           PENDENTE: "PENDING", PAGO: "COMPLETED", RECEBIDO: "COMPLETED",
@@ -226,7 +225,6 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         };
         if (statusStr) {
           status = statusMap[statusStr] || statusStr;
-          // Se status legado diz PAGO/RECEBIDO mas sem data, preencher com data da transação
           if (status === "COMPLETED") {
             if (tipo_transacao === "EXPENSE" && !paymentDate) paymentDate = date;
             if (tipo_transacao === "INCOME" && !receiptDate) receiptDate = date;
@@ -234,7 +232,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         }
       }
 
-      // 6. CONTRAPARTE (opcional — busca por nome ou CNPJ/CPF)
+      // 6. CONTRAPARTE (opcional)
       const counterpartyStr = record.contraparte || record.Contraparte || record.CONTRAPARTE ||
         record.fornecedor || record.Fornecedor || record.cliente || record.Cliente || "";
       let counterpartyId: string | undefined;
@@ -271,7 +269,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         dueDate = date;
       }
 
-      // 8. DOCUMENTO (opcional — número da NF, boleto, etc)
+      // 8. DOCUMENTO (opcional)
       const documentNumber = record.documento || record.Documento || record.DOCUMENTO ||
         record.nota_fiscal || record.nf || record.NF || "";
 
@@ -310,7 +308,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           data: {
             companyId,
             name,
-            type: "SUPPLIER", // Default, pode ser ajustado depois
+            type: "SUPPLIER",
           },
         });
         createdCounterparties[name.toLowerCase()] = cp.id;
@@ -340,7 +338,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           },
         });
 
-        // Criar detalhe — sempre criar para manter paymentDate/receiptDate
+        // Criar detalhe
         await prisma.transactionDetail.create({
           data: {
             transactionId: transaction.id,
@@ -360,7 +358,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
     }
 
     // ============================================
-    // CLASSIFICAÇÃO DE CATEGORIA (IA) - mantém lógica existente
+    // CLASSIFICAÇÃO DE CATEGORIA (IA) — CONTEXTUALIZADA POR EMPRESA
     // ============================================
     const unclassified = await prisma.transaction.findMany({
       where: { uploadId: uploadRecord.id, categoryId: null },
@@ -368,19 +366,21 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
     });
 
     if (unclassified.length > 0) {
-      const categories = await prisma.category.findMany({
-        select: { code: true, name: true, type: true },
+      // Resolver categorias da empresa (customizadas ou globais)
+      const resolvedCategories = await resolveCompanyCategories(companyId);
+
+      // Buscar categorias globais para fazer match de categoryId
+      const globalCategories = await prisma.category.findMany({
+        select: { id: true, code: true, name: true, type: true },
       });
 
-      // Buscar setor da empresa para categorização mais precisa
+      // Buscar contexto completo da empresa
       const company = await prisma.company.findUnique({
         where: { id: companyId },
-        select: { sector: true },
+        select: { sector: true, activity: true, useCustomChart: true },
       });
-      const companySector = company?.sector || "MISTO";
 
       const batchSize = 20;
-      // Acumular classificações entre lotes para consistência
       const accumulatedClassifications: Array<{ description: string; categoryCode: string }> = [];
 
       // Buscar classificações existentes da empresa para contexto inicial
@@ -388,7 +388,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         where: { companyId, categoryId: { not: null } },
         select: { description: true, category: { select: { code: true } } },
         distinct: ['description'],
-        take: 100, // Limitar para não sobrecarregar o prompt
+        take: 100,
       });
       existingClassified.forEach((t) => {
         if (t.category?.code) {
@@ -408,17 +408,19 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         }));
 
         try {
+          // CHAMADA ATUALIZADA: passa companyId em vez de categories + companySector
           const classifications = await aiService.classifyTransactions(
             userId,
+            companyId,
             batch,
-            categories.map((c) => ({ code: c.code, name: c.name, type: c.type })),
-            companySector,
             accumulatedClassifications
           );
 
           for (const classification of classifications) {
-            const category = categories.find((c) => c.code === classification.categoryCode);
-            if (category) {
+            // Buscar categoria global pelo código retornado pela IA
+            const globalCategory = globalCategories.find((c) => c.code === classification.categoryCode);
+
+            if (globalCategory) {
               // VALIDAÇÃO: Consistência tipo_transacao vs código de categoria
               const transaction = batch.find((t) => t.id === classification.id);
               const catPrefix = parseInt(classification.categoryCode.split(".")[0]);
@@ -426,30 +428,47 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
               const isExpenseTransaction = transaction?.type === "EXPENSE";
               const isIncomeTransaction = transaction?.type === "INCOME";
 
-              // Rejeitar classificação inconsistente e aplicar fallback
               let finalCategoryCode = classification.categoryCode;
               if (isExpenseTransaction && isRevenueCategory) {
                 console.warn(`[Upload] IA classificou despesa "${transaction?.description}" como receita (${classification.categoryCode}). Aplicando fallback 5.0.`);
-                finalCategoryCode = "5.0"; // Despesas Operacionais genérico
+                finalCategoryCode = "5.0";
               } else if (isIncomeTransaction && !isRevenueCategory) {
                 console.warn(`[Upload] IA classificou receita "${transaction?.description}" como despesa (${classification.categoryCode}). Aplicando fallback 2.5.`);
-                finalCategoryCode = "2.5"; // Outras Receitas
+                finalCategoryCode = "2.5";
               }
 
-              await prisma.transaction.update({
-                where: { id: classification.id },
-                data: {
-                  categoryId: (await prisma.category.findUnique({ where: { code: finalCategoryCode } }))?.id,
-                  aiClassified: true,
-                  confidence: classification.confidence,
-                },
-              });
+              // Buscar o ID da categoria global final
+              const finalCategory = globalCategories.find((c) => c.code === finalCategoryCode);
 
-              // Acumular classificação para contexto dos próximos lotes
+              if (finalCategory) {
+                await prisma.transaction.update({
+                  where: { id: classification.id },
+                  data: {
+                    categoryId: finalCategory.id,
+                    aiClassified: true,
+                    confidence: classification.confidence,
+                  },
+                });
+              }
+
               if (transaction) {
                 accumulatedClassifications.push({
                   description: transaction.description,
                   categoryCode: finalCategoryCode,
+                });
+              }
+            } else {
+              // Código retornado pela IA não existe na tabela global
+              // Isso pode acontecer com plano customizado que tem códigos novos
+              // Tentar match pelo nome da categoria customizada → código global mais próximo
+              console.warn(`[Upload] Código "${classification.categoryCode}" não encontrado na tabela Category global. Transação ficará sem categoria.`);
+
+              // Acumular mesmo assim para consistência entre lotes
+              const transaction = batch.find((t) => t.id === classification.id);
+              if (transaction) {
+                accumulatedClassifications.push({
+                  description: transaction.description,
+                  categoryCode: classification.categoryCode,
                 });
               }
             }
@@ -461,7 +480,7 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
     }
 
     // ============================================
-    // CLASSIFICAÇÃO DE TIPO DE CUSTO (IA) - em lotes de 20
+    // CLASSIFICAÇÃO DE TIPO DE CUSTO (IA) — com atividade da empresa
     // ============================================
     const unclassifiedExpenses = await prisma.transaction.findMany({
       where: {
@@ -473,6 +492,12 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
     });
 
     if (unclassifiedExpenses.length > 0) {
+      // Buscar atividade da empresa para contexto
+      const companyForCost = await prisma.company.findUnique({
+        where: { id: companyId },
+        select: { activity: true },
+      });
+
       const costBatchSize = 20;
       for (let i = 0; i < unclassifiedExpenses.length; i += costBatchSize) {
         const batch = unclassifiedExpenses.slice(i, i + costBatchSize).map((t) => ({
@@ -485,7 +510,8 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         try {
           const costClassifications = await aiService.classifyCostType(
             userId,
-            batch
+            batch,
+            companyForCost?.activity
           );
 
           for (const costClass of costClassifications) {
@@ -573,7 +599,7 @@ router.get("/template", authMiddleware, (_req: Request, res: Response) => {
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", "attachment; filename=template_transacoes_v3.csv");
-  res.send("\uFEFF" + csv); // BOM para Excel
+  res.send("\uFEFF" + csv);
 });
 
 export default router;
