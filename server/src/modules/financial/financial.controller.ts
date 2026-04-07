@@ -187,6 +187,8 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
 // ============================================
 // GET /api/financial/cashflow
 // REGIME DE CAIXA: apenas COMPLETED, agrupado por data efetiva
+// CORREÇÃO: Retorna initialBalance (saldo das transações anteriores ao período)
+// para que o gráfico de saldo acumulado seja consistente com o card de Saldo de Caixa
 // ============================================
 router.get("/cashflow", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -200,18 +202,33 @@ router.get("/cashflow", authMiddleware, async (req: Request, res: Response, next
       include: { detail: true },
     });
 
-    // Filtrar por data efetiva >= startDate e agrupar por mês
+    // CORREÇÃO: Calcular saldo das transações ANTERIORES ao período exibido
+    // Antes, essas transações eram simplesmente descartadas com "return",
+    // causando divergência entre o saldo do card (que soma tudo) e o gráfico (que partia de 0)
+    let initialBalance = 0;
     const monthlyMap: Record<string, { income: number; expense: number }> = {};
+
     transactions.forEach((t) => {
       const effectiveDate = getEffectiveDate(t);
-      if (effectiveDate < startDate) return; // Fora do período
+      const amount = Number(t.amount);
 
+      if (effectiveDate < startDate) {
+        // Transação anterior ao período → acumula no saldo inicial
+        if (t.tipo_transacao === "INCOME") {
+          initialBalance += amount;
+        } else {
+          initialBalance -= amount;
+        }
+        return;
+      }
+
+      // Transação dentro do período → agrupa por mês normalmente
       const monthKey = formatMonthKey(effectiveDate);
       if (!monthlyMap[monthKey]) monthlyMap[monthKey] = { income: 0, expense: 0 };
       if (t.tipo_transacao === "INCOME") {
-        monthlyMap[monthKey].income += Number(t.amount);
+        monthlyMap[monthKey].income += amount;
       } else {
-        monthlyMap[monthKey].expense += Number(t.amount);
+        monthlyMap[monthKey].expense += amount;
       }
     });
 
@@ -224,7 +241,8 @@ router.get("/cashflow", authMiddleware, async (req: Request, res: Response, next
         net: data.income - data.expense,
       }));
 
-    res.json({ success: true, data: result });
+    // CORREÇÃO: Retornar initialBalance junto com os dados mensais
+    res.json({ success: true, data: result, initialBalance });
   } catch (error) {
     next(error);
   }
