@@ -31,6 +31,15 @@ const changePasswordSchema = z.object({
   newPassword: z.string().min(6, "Nova senha deve ter pelo menos 6 caracteres"),
 });
 
+// POST /api/auth/validate-admin-key — Valida se a chave admin é correta (usado pelo frontend)
+router.post(
+  "/validate-admin-key",
+  adminKeyMiddleware,
+  async (_req: Request, res: Response) => {
+    res.json({ success: true, message: "Chave válida." });
+  }
+);
+
 // POST /api/auth/register — PROTEGIDO: requer header X-Admin-Key
 router.post(
   "/register",
