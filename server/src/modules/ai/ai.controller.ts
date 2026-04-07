@@ -3,6 +3,7 @@ import { z } from "zod";
 import { authMiddleware } from "../auth/auth.middleware.js";
 import * as aiService from "./ai.service.js";
 import { prisma } from "../../shared/database.js";
+import { getDREProfile } from "../../shared/dre-profiles.js";
 
 const router = Router();
 
@@ -364,11 +365,28 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
   // Antes: usava t.date (data de emissão)
   // Agora: usa getEffectiveDate() (paymentDate/receiptDate), igual ao Dashboard
   // ============================================
+  // CORREÇÃO 3: Buscar dreProfile para calcular margens corretamente
+  // Margem Bruta = (Receita - Custos Diretos) / Receita
+  // Margem Líquida = (Receita - Custos Diretos - Opex) / Receita
+  // ============================================
+  const dreProfile = getDREProfile(company?.sector || "MISTO");
+  const directCostCodes = dreProfile.directCostCodes || ["3."];
+  const excludeFromDirectCost = dreProfile.excludeFromDirectCost || [];
+
+  // Helper: verifica se um código de categoria é custo direto (mesma lógica do frontend)
+  const isDirectCost = (code: string): boolean => {
+    const isDirect = directCostCodes.some((prefix: string) => code.startsWith(prefix));
+    const isExcluded = excludeFromDirectCost.some((prefix: string) => code.startsWith(prefix));
+    return isDirect && !isExcluded;
+  };
+
   const monthlyData: Record<string, {
     income: number;
     expense: number;
     incomeByCategory: Record<string, number>;
     expenseByCategory: Record<string, number>;
+    // DRE: agrupamento por código para calcular margens
+    byCatCode: Record<string, number>;
   }> = {};
 
   allTransactions.forEach((t) => {
@@ -377,10 +395,24 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     const mk = formatMonthKey(effectiveDate);
 
     if (!monthlyData[mk]) {
-      monthlyData[mk] = { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {} };
+      monthlyData[mk] = { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {}, byCatCode: {} };
     }
     const amt = Number(t.amount);
     const catName = t.category?.name || "Não classificado";
+
+    // Determinar código de categoria com fallbacks (mesma lógica do DRE)
+    let catCode = t.category?.code || "0.0";
+    const catPrefix = catCode.split(".")[0];
+    if (catCode === "0.0") {
+      catCode = t.tipo_transacao === "INCOME" ? "2.5" : "5.0";
+    } else if (t.tipo_transacao === "EXPENSE" && (catPrefix === "1" || catPrefix === "2")) {
+      catCode = "5.0";
+    } else if (t.tipo_transacao === "INCOME" && parseInt(catPrefix) >= 3) {
+      catCode = "2.5";
+    }
+
+    // Agrupar por código de categoria (para DRE/margens)
+    monthlyData[mk].byCatCode[catCode] = (monthlyData[mk].byCatCode[catCode] || 0) + amt;
 
     if (t.tipo_transacao === "INCOME") {
       monthlyData[mk].income += amt;
@@ -390,6 +422,40 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
       monthlyData[mk].expenseByCategory[catName] = (monthlyData[mk].expenseByCategory[catName] || 0) + amt;
     }
   });
+
+  // ============================================
+  // Helper: Calcular margens DRE de um mês (mesma lógica do frontend)
+  // ============================================
+  function calcDREMargins(monthData: { byCatCode: Record<string, number> }) {
+    const codes = monthData.byCatCode;
+    // Receita = códigos 1.x + 2.x
+    const receita = Object.entries(codes)
+      .filter(([k]) => k.startsWith("1.") || k.startsWith("2."))
+      .reduce((sum, [, v]) => sum + v, 0);
+    // Custos Diretos (CMV/CSP/CPV conforme setor)
+    const cmv = Object.entries(codes)
+      .filter(([k]) => isDirectCost(k))
+      .reduce((sum, [, v]) => sum + v, 0);
+    // Despesas Operacionais = 3.x a 8.x que NÃO são custo direto
+    const opex = Object.entries(codes)
+      .filter(([k]) => {
+        const prefix = k.split(".")[0];
+        if (!["3", "4", "5", "6", "7", "8"].includes(prefix)) return false;
+        return !isDirectCost(k);
+      })
+      .reduce((sum, [, v]) => sum + v, 0);
+    const lucroBruto = receita - cmv;
+    const lucroLiquido = receita - cmv - opex;
+    return {
+      receita,
+      cmv,
+      opex,
+      lucroBruto,
+      lucroLiquido,
+      margemBruta: receita > 0 ? (lucroBruto / receita) * 100 : 0,
+      margemLiquida: receita > 0 ? (lucroLiquido / receita) * 100 : 0,
+    };
+  }
 
   const totalIncome = allTransactions.filter((t) => t.tipo_transacao === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
   const totalExpense = allTransactions.filter((t) => t.tipo_transacao === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
@@ -403,14 +469,17 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
   const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const lastMonthKey = `${lastMonthStart.getFullYear()}-${String(lastMonthStart.getMonth() + 1).padStart(2, "0")}`;
-  const currentMonth = monthlyData[currentMonthKey] || { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {} };
-  const lastMonth = monthlyData[lastMonthKey] || { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {} };
+  const currentMonth = monthlyData[currentMonthKey] || { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {}, byCatCode: {} };
+  const lastMonth = monthlyData[lastMonthKey] || { income: 0, expense: 0, incomeByCategory: {}, expenseByCategory: {}, byCatCode: {} };
 
-  const currentGrossProfit = currentMonth.income - currentMonth.expense;
-  const lastGrossProfit = lastMonth.income - lastMonth.expense;
+  // Margens calculadas via DRE (mesma lógica do frontend)
+  const currentDRE = calcDREMargins(currentMonth);
+  const lastDRE = calcDREMargins(lastMonth);
+
+  // Compat: manter variáveis usadas no contexto abaixo
+  const currentGrossProfit = currentDRE.lucroBruto;
+  const lastGrossProfit = lastDRE.lucroBruto;
   const grossProfitChange = lastGrossProfit !== 0 ? ((currentGrossProfit - lastGrossProfit) / Math.abs(lastGrossProfit) * 100) : 0;
-  const currentMargin = currentMonth.income > 0 ? (currentGrossProfit / currentMonth.income * 100) : 0;
-  const lastMargin = lastMonth.income > 0 ? (lastGrossProfit / lastMonth.income * 100) : 0;
 
   // Evolução mensal COM MARGEM DE LUCRO, CATEGORIAS DETALHADAS E SALDO ACUMULADO
   const monthKeys = Object.keys(monthlyData).sort();
@@ -427,7 +496,9 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
   const monthlyEvolution = monthKeys.map((mk) => {
     const d = monthlyData[mk];
     const net = d.income - d.expense;
-    const margin = d.income > 0 ? ((net / d.income) * 100).toFixed(1) : "0.0";
+    const dreMes = calcDREMargins(d);
+    const margemBrutaMes = dreMes.margemBruta.toFixed(1);
+    const margemLiquidaMes = dreMes.margemLiquida.toFixed(1);
     const accumulatedBalance = monthlyBalances[mk];
 
     // Top 5 despesas do mês
@@ -449,7 +520,8 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     detail += `\n    Despesa Total: R$ ${d.expense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     detail += `\n    Líquido: R$ ${net.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     detail += `\n    Saldo Acumulado: R$ ${accumulatedBalance.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    detail += `\n    Margem de Lucro: ${margin}%`;
+    detail += `\n    Margem Bruta: ${margemBrutaMes}% (Receita DRE: R$ ${dreMes.receita.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} - ${dreProfile.directCostLabel}: R$ ${dreMes.cmv.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})`;
+    detail += `\n    Margem Líquida: ${margemLiquidaMes}% (Lucro Bruto - Opex: R$ ${dreMes.opex.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})`;
     if (topIncomes) {
       detail += `\n    Receitas por categoria:`;
       detail += `\n${topIncomes}`;
@@ -527,7 +599,11 @@ IMPORTANTE: Todos os dados abaixo seguem o REGIME DE CAIXA.
 - Despesa Atual: R$ ${currentMonth.expense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastMonth.expense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Lucro Bruto Atual: R$ ${currentGrossProfit.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastGrossProfit.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Variação do Lucro Bruto: ${grossProfitChange > 0 ? "+" : ""}${grossProfitChange.toFixed(1)}%
-- Margem Atual: ${currentMargin.toFixed(1)}% | Margem Anterior: ${lastMargin.toFixed(1)}%
+- ${dreProfile.directCostLabel} Atual: R$ ${currentDRE.cmv.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastDRE.cmv.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Despesas Operacionais Atual: R$ ${currentDRE.opex.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastDRE.opex.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Margem Bruta Atual: ${currentDRE.margemBruta.toFixed(1)}% | Margem Bruta Anterior: ${lastDRE.margemBruta.toFixed(1)}%
+- Margem Líquida Atual: ${currentDRE.margemLiquida.toFixed(1)}% | Margem Líquida Anterior: ${lastDRE.margemLiquida.toFixed(1)}%
+- IMPORTANTE: Margem Bruta = (Receita - ${dreProfile.directCostLabel}) / Receita. Margem Líquida = (Receita - ${dreProfile.directCostLabel} - Opex) / Receita. NÃO confunda as duas.
 - Saldo Acumulado Atual: R$ ${(monthlyBalances[currentMonthKey] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Saldo Acumulado Anterior: R$ ${(monthlyBalances[lastMonthKey] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 
 === EVOLUÇÃO MENSAL DETALHADA (regime de caixa, com categorias e saldo acumulado) ===
