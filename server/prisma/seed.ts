@@ -30,6 +30,7 @@ const categories = [
   { code: "4.3", name: "Benefícios", type: "EXPENSE", parentCode: "4.0" },
   { code: "4.4", name: "Prestadores PJ", type: "EXPENSE", parentCode: "4.0" },
   { code: "4.5", name: "Treinamento e Capacitação", type: "EXPENSE", parentCode: "4.0" },
+  { code: "4.6", name: "INSS Patronal", type: "EXPENSE", parentCode: "4.0" },
   // DESPESAS OPERACIONAIS
   { code: "5.0", name: "Despesas Operacionais", type: "EXPENSE", parentCode: null },
   { code: "5.1", name: "Aluguel e Condomínio", type: "EXPENSE", parentCode: "5.0" },
@@ -61,7 +62,7 @@ const categories = [
   { code: "8.3", name: "ICMS", type: "EXPENSE", parentCode: "8.0" },
   { code: "8.4", name: "PIS/COFINS", type: "EXPENSE", parentCode: "8.0" },
   { code: "8.5", name: "IRPJ/CSLL", type: "EXPENSE", parentCode: "8.0" },
-  { code: "8.6", name: "INSS Patronal", type: "EXPENSE", parentCode: "8.0" },
+  // 8.6 removido — INSS Patronal movido para 4.6 (Despesas com Pessoal)
   { code: "8.7", name: "Outros Tributos", type: "EXPENSE", parentCode: "8.0" },
   // INVESTIMENTOS
   { code: "9.0", name: "Investimentos (Capex)", type: "EXPENSE", parentCode: null },

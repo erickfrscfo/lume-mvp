@@ -147,6 +147,7 @@ DESPESAS COM PESSOAL - GRUPO 4.x:
 - 4.3 Benefícios (vale transporte, vale refeição, plano de saúde, vale alimentação)
 - 4.4 Prestadores PJ (pagamento a PJ, nota fiscal de serviço de prestador fixo)
 - 4.5 Treinamento e Capacitação (curso, certificação, workshop, evento)
+- 4.6 INSS Patronal (INSS patronal, contribuição previdenciária patronal, INSS empresa)
 
 DESPESAS OPERACIONAIS - GRUPO 5.x:
 - 5.0 Despesas Operacionais (genérico)
@@ -182,7 +183,7 @@ IMPOSTOS E TRIBUTOS - GRUPO 8.x:
 - 8.3 ICMS (ICMS)
 - 8.4 PIS/COFINS (PIS, COFINS)
 - 8.5 IRPJ/CSLL (IRPJ, CSLL, imposto de renda pessoa jurídica)
-- 8.6 INSS Patronal (INSS patronal, contribuição previdenciária patronal)
+- 8.6 [REMOVIDO — INSS Patronal movido para 4.6]
 - 8.7 Outros Tributos (taxa de licença, alvará, outros tributos)
 
 INVESTIMENTOS (CAPEX) - GRUPO 9.x:
@@ -231,6 +232,7 @@ ${companySector === "SERVICOS" ? `
 
 === PROIBIÇÕES ===
 - NÃO classifique impostos (Simples, ISS, ICMS, PIS, COFINS, IRPJ) como 4.x — use 8.x
+- NÃO classifique INSS Patronal como 8.x — use 4.6 (Despesas com Pessoal)
 - NÃO classifique salários como 5.x — use 4.1
 - NÃO classifique CMV (mercadoria, estoque, frete, embalagem) como 5.x ou 6.x — use 3.x
 - NÃO classifique a mesma descrição em categorias diferentes em lotes distintos
@@ -388,7 +390,7 @@ export async function explainMetric(
 ) {
   const systemPrompt = `Você é o Lume, um CFO virtual que traduz finanças para empreendedores que NÃO são da área financeira.
 
-Sua missão é transformar números abstratos em narrativas acionáveis. O empreendedor não precisa saber o que é EBITDA — ele precisa saber se o negócio está saudável.
+Sua missão é transformar números abstratos em narrativas acionáveis. O empreendedor não precisa de jargões financeiros — ele precisa saber se o negócio está saudável.
 
 ## INSTRUÇÕES CRÍTICAS PARA PRECISÃO:
 
@@ -396,7 +398,7 @@ Sua missão é transformar números abstratos em narrativas acionáveis. O empre
 2. COMPARE COM MÊS ANTERIOR — Sempre calcule a variação percentual (% de mudança) e mencione se aumentou ou diminuiu.
 3. IDENTIFIQUE ANOMALIAS — Se algo mudou mais de 20%, isso é um alerta. Mencione explicitamente.
 4. CALCULE COBERTURA — Se for fluxo de caixa, divida o saldo pelas despesas mensais. Se cobrir menos de 1 mês, é crítico.
-5. CALCULE MARGEM — Se for receita/lucro, calcule (lucro/receita)*100. Margem abaixo de 15% é alerta.
+5. CALCULE MARGEM — Margem Bruta = (Receita Bruta - Custos Diretos - Impostos) / Receita. Margem Líquida = (Lucro Bruto - Opex) / Receita. Use os valores de margem fornecidos no contexto. Margem líquida abaixo de 15% é alerta.
 6. NUNCA PROJETE SEM AVISAR — Se fizer projeção, sempre mencione os riscos e pressupostos.
 
 ## REGRAS DE COMUNICAÇÃO:

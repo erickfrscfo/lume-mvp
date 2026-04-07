@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { authMiddleware } from "../auth/auth.middleware.js";
 import { prisma } from "../../shared/database.js";
-import { getDREProfile, AVAILABLE_SECTORS } from "../../shared/dre-profiles.js";
+import { getDREProfile, isDirectCost, isTax, AVAILABLE_SECTORS } from "../../shared/dre-profiles.js";
 import { generateAlerts } from "../alerts/alerts.controller.js";
 import { z } from "zod";
 
@@ -300,6 +300,7 @@ router.get("/dre", authMiddleware, async (req: Request, res: Response, next: Nex
         grossProfitLabel: profile.grossProfitLabel,
         directCostCodes: profile.directCostCodes,
         excludeFromDirectCost: profile.excludeFromDirectCost,
+        taxCodes: profile.taxCodes,
       },
     });
   } catch (error) {
@@ -449,44 +450,6 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
 
     const tipo_transacao = (type === "INCOME" || type === "ENTRADA") ? "INCOME" : "EXPENSE";
 
-    // ============================================
-    // VALIDAÇÃO: paid_at / received_at NÃO pode ser futuro
-    // Regra de regime de caixa: paid_at <= today
-    // ============================================
-    const today = new Date();
-    today.setHours(23, 59, 59, 999); // Fim do dia atual
-
-    if (paymentDate) {
-      const pd = parseLocalDate(paymentDate);
-      if (pd > today) {
-        return res.status(400).json({
-          success: false,
-          error: "Data de pagamento não pode ser futura. Se o pagamento ainda não ocorreu, deixe o campo vazio.",
-        });
-      }
-    }
-    if (receiptDate) {
-      const rd = parseLocalDate(receiptDate);
-      if (rd > today) {
-        return res.status(400).json({
-          success: false,
-          error: "Data de recebimento não pode ser futura. Se o recebimento ainda não ocorreu, deixe o campo vazio.",
-        });
-      }
-    }
-
-    // Validação: due_date >= issue_date
-    if (dueDate && date) {
-      const dd = parseLocalDate(dueDate);
-      const issueD = parseLocalDate(date);
-      if (dd < issueD) {
-        return res.status(400).json({
-          success: false,
-          error: "Data de vencimento não pode ser anterior à data de emissão.",
-        });
-      }
-    }
-
     // Status derivado de paymentDate/receiptDate
     let status = "PENDING";
     if (tipo_transacao === "EXPENSE" && paymentDate) {
@@ -586,45 +549,7 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
     if (notes !== undefined) txUpdateData.notes = notes;
     if (counterpartyId !== undefined) txUpdateData.counterpartyId = counterpartyId || null;
 
-    // ============================================
-    // VALIDAÇÃO: paid_at / received_at NÃO pode ser futuro
-    // Regra de regime de caixa: paid_at <= today
-    // ============================================
-    const today = new Date();
-    today.setHours(23, 59, 59, 999);
-
-    if (paymentDate !== undefined && paymentDate) {
-      const pd = parseLocalDate(paymentDate);
-      if (pd > today) {
-        return res.status(400).json({
-          success: false,
-          error: "Data de pagamento não pode ser futura. Se o pagamento ainda não ocorreu, deixe o campo vazio.",
-        });
-      }
-    }
-    if (receiptDate !== undefined && receiptDate) {
-      const rd = parseLocalDate(receiptDate);
-      if (rd > today) {
-        return res.status(400).json({
-          success: false,
-          error: "Data de recebimento não pode ser futura. Se o recebimento ainda não ocorreu, deixe o campo vazio.",
-        });
-      }
-    }
-
-    // Validação: due_date >= issue_date
-    if (dueDate !== undefined && dueDate) {
-      const dd = parseLocalDate(dueDate);
-      const issueDate = date !== undefined ? parseLocalDate(date) : transaction.date;
-      if (dd < issueDate) {
-        return res.status(400).json({
-          success: false,
-          error: "Data de vencimento não pode ser anterior à data de emissão.",
-        });
-      }
-    }
-
-    // Status derivado: se paymentDate/receiptDate preenchido E válido (não futuro) = COMPLETED
+    // Status derivado: se paymentDate/receiptDate preenchido = COMPLETED, senão = PENDING
     if (paymentDate !== undefined || receiptDate !== undefined) {
       const tipo = transaction.tipo_transacao;
       const existingDetail = await prisma.transactionDetail.findUnique({
