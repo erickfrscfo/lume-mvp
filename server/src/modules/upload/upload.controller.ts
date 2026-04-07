@@ -197,7 +197,26 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
         if (isNaN(receiptDate.getTime())) receiptDate = undefined;
       }
 
-      // STATUS DERIVADO: se data de pagamento/recebimento preenchida = COMPLETED, senão = PENDING
+      // VALIDAÇÃO: paid_at / received_at NÃO pode ser futuro (regime de caixa)
+      const todayEnd = new Date();
+      todayEnd.setHours(23, 59, 59, 999);
+
+      if (paymentDate && paymentDate > todayEnd) {
+        console.warn(`[Upload] Linha ${i + 1}: data_pagamento futura (${paymentDate.toISOString()}) ignorada. Transação será PENDING.`);
+        paymentDate = undefined; // Ignorar data futura, manter como PENDING
+      }
+      if (receiptDate && receiptDate > todayEnd) {
+        console.warn(`[Upload] Linha ${i + 1}: data_recebimento futura (${receiptDate.toISOString()}) ignorada. Transação será PENDING.`);
+        receiptDate = undefined; // Ignorar data futura, manter como PENDING
+      }
+
+      // Validação: due_date >= issue_date
+      if (dueDate && date && dueDate < date) {
+        console.warn(`[Upload] Linha ${i + 1}: vencimento (${dueDate.toISOString()}) anterior à emissão (${date.toISOString()}). Ajustando vencimento = emissão.`);
+        dueDate = date;
+      }
+
+      // STATUS DERIVADO: se data de pagamento/recebimento preenchida E válida = COMPLETED, senão = PENDING
       // Também aceita coluna status legada para retrocompatibilidade
       let status = "PENDING";
       if (tipo_transacao === "EXPENSE" && paymentDate) {

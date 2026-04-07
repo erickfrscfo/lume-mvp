@@ -322,10 +322,16 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     const avgVariable = weightedAverage(variableValues);
 
     // ============================================
-    // 5. BUSCAR TRANSAÇÕES PENDENTES COM VENCIMENTO FUTURO
-    //    Estes são compromissos já conhecidos que devem ser
-    //    sobrepostos à projeção estatística
+    // 5. BUSCAR COMPROMISSOS CONHECIDOS PARA FORECAST
+    //    Inclui:
+    //    a) Transações PENDING/OVERDUE (agrupadas por dueDate)
+    //    b) Transações COMPLETED com data efetiva FUTURA (dados legados/edge case)
+    //       Regra: paid_at <= today, mas se existir no banco, tratar como compromisso
     // ============================================
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+
+    // 5a. Transações PENDING/OVERDUE
     const pendingTransactions = await prisma.transaction.findMany({
       where: {
         companyId,
@@ -336,8 +342,24 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       },
     });
 
+    // 5b. Transações COMPLETED com data efetiva futura (resiliência)
+    //     Isso não deveria existir após a validação, mas protege contra dados legados
+    const completedFuture = completedTransactions.filter((tx) => {
+      const effectiveDate = getEffectiveDate(tx);
+      return effectiveDate > today;
+    });
+
+    if (completedFuture.length > 0) {
+      console.warn(
+        `[Forecast] ${completedFuture.length} transações COMPLETED com data efetiva futura encontradas. ` +
+        `Tratando como compromissos conhecidos no forecast.`
+      );
+    }
+
     // Agrupar pendentes por mês de vencimento (dueDate)
     const pendingByMonth: Record<string, { income: number; expense: number }> = {};
+
+    // Pendentes: usar dueDate
     for (const tx of pendingTransactions) {
       const dueDate = tx.detail?.dueDate;
       if (!dueDate) continue; // Sem vencimento, não incluir na projeção
@@ -350,6 +372,32 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
         pendingByMonth[monthKey].income += amount;
       } else {
         pendingByMonth[monthKey].expense += amount;
+      }
+    }
+
+    // COMPLETED com data futura: usar data efetiva (paymentDate/receiptDate)
+    for (const tx of completedFuture) {
+      const effectiveDate = getEffectiveDate(tx);
+      const monthKey = formatMonthKey(effectiveDate);
+      if (!pendingByMonth[monthKey]) pendingByMonth[monthKey] = { income: 0, expense: 0 };
+
+      const amount = Math.abs(Number(tx.amount));
+      if (tx.tipo_transacao === "INCOME") {
+        pendingByMonth[monthKey].income += amount;
+      } else {
+        pendingByMonth[monthKey].expense += amount;
+      }
+
+      // REMOVER do historical para não contar duas vezes
+      // (já está no pendingByMonth como compromisso futuro)
+      const histMonth = monthlyMap.get(monthKey);
+      if (histMonth) {
+        if (tx.tipo_transacao === "INCOME") {
+          histMonth.income -= amount;
+        } else {
+          histMonth.expense -= amount;
+        }
+        histMonth.net = histMonth.income - histMonth.expense;
       }
     }
 
