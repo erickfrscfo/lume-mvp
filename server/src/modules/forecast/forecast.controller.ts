@@ -267,8 +267,18 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       data.net = data.income - data.expense;
     }
 
-    // Ordenar por mês
-    const historical = Array.from(monthlyMap.values()).sort((a, b) => a.month.localeCompare(b.month));
+    // ============================================
+    // CORREÇÃO 1: Excluir mês corrente (incompleto) do historical
+    // Apenas meses completos (month < currentMonth) entram no cálculo dos drivers.
+    // O mês corrente ainda pode ter transações parciais que distorcem
+    // todos os indicadores (CMV%, crescimento, receita base).
+    // ============================================
+    const historical = Array.from(monthlyMap.values())
+      .filter(m => m.month < currentMonth) // EXCLUIR mês corrente (incompleto)
+      .sort((a, b) => a.month.localeCompare(b.month));
+
+    // Manter o mês corrente separado para incluir no response (visualização no gráfico)
+    const currentMonthData = monthlyMap.get(currentMonth);
 
     // ============================================
     // 3. VERIFICAR MÍNIMO DE DADOS
@@ -278,7 +288,9 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       return res.json({
         success: true,
         data: {
-          historical,
+          historical: currentMonthData
+            ? [...historical, currentMonthData] // Incluir mês corrente na visualização
+            : historical,
           forecast: [],
           metadata: {
             forecastAvailable: false,
@@ -298,7 +310,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     }
 
     // ============================================
-    // 4. CALCULAR DRIVERS (baseados em caixa real)
+    // 4. CALCULAR DRIVERS (baseados apenas em meses COMPLETOS)
     // ============================================
     const recentMonths = historical.slice(-6);
     const last3Months = historical.slice(-3);
@@ -326,7 +338,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     //    Inclui:
     //    a) Transações PENDING/OVERDUE (agrupadas por dueDate)
     //    b) Transações COMPLETED com data efetiva FUTURA (dados legados/edge case)
-    //       Regra: paid_at <= today, mas se existir no banco, tratar como compromisso
+    //       Regra: paid_at <= today mas data efetiva > today
     // ============================================
     const today = new Date();
     today.setHours(23, 59, 59, 999);
@@ -404,8 +416,19 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     // ============================================
     // 6. GERAR FORECAST (projeção + compromissos pendentes)
     // ============================================
-    const lastHistoricalMonth = historical[historical.length - 1].month;
-    const lastIncome = historical[historical.length - 1].income;
+
+    // CORREÇÃO 2: O forecast começa a partir do mês corrente
+    // (que foi excluído do historical por ser incompleto)
+    const lastHistoricalMonth = historical.length > 0
+      ? historical[historical.length - 1].month
+      : nextMonth(currentMonth, -1);
+
+    // CORREÇÃO 3: Base de receita = média dos últimos 6 meses completos
+    // Usar o último mês como base é frágil — um mês atípico distorce toda a projeção.
+    // A média suaviza variações pontuais e reflete melhor a operação real.
+    const baseMonths = historical.slice(-6);
+    const lastIncome = baseMonths.reduce((s, m) => s + m.income, 0) / baseMonths.length;
+
     const forecast: ForecastPoint[] = [];
 
     for (let i = 1; i <= months; i++) {
@@ -462,11 +485,17 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
 
     // ============================================
     // 7. RESPOSTA
+    // O historical no response inclui o mês corrente para visualização no gráfico,
+    // mas o mês corrente NÃO foi usado no cálculo dos drivers.
     // ============================================
+    const historicalForResponse = currentMonthData
+      ? [...historical, currentMonthData]
+      : historical;
+
     return res.json({
       success: true,
       data: {
-        historical,
+        historical: historicalForResponse,
         forecast,
         metadata: {
           forecastAvailable: true,
