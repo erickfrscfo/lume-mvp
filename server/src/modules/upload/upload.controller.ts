@@ -202,18 +202,12 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
       todayEnd.setHours(23, 59, 59, 999);
 
       if (paymentDate && paymentDate > todayEnd) {
-        console.warn(`[Upload] Linha ${i + 1}: data_pagamento futura (${paymentDate.toISOString()}) ignorada. Transação será PENDING.`);
+        console.warn(`[Upload] Linha ${line}: data_pagamento futura (${paymentDate.toISOString()}) ignorada. Transação será PENDING.`);
         paymentDate = undefined; // Ignorar data futura, manter como PENDING
       }
       if (receiptDate && receiptDate > todayEnd) {
-        console.warn(`[Upload] Linha ${i + 1}: data_recebimento futura (${receiptDate.toISOString()}) ignorada. Transação será PENDING.`);
+        console.warn(`[Upload] Linha ${line}: data_recebimento futura (${receiptDate.toISOString()}) ignorada. Transação será PENDING.`);
         receiptDate = undefined; // Ignorar data futura, manter como PENDING
-      }
-
-      // Validação: due_date >= issue_date
-      if (dueDate && date && dueDate < date) {
-        console.warn(`[Upload] Linha ${i + 1}: vencimento (${dueDate.toISOString()}) anterior à emissão (${date.toISOString()}). Ajustando vencimento = emissão.`);
-        dueDate = date;
       }
 
       // STATUS DERIVADO: se data de pagamento/recebimento preenchida E válida = COMPLETED, senão = PENDING
@@ -269,6 +263,12 @@ router.post("/csv", authMiddleware, upload.single("file"), async (req: Request, 
           dueDate = parseLocalDate(vencimentoStr);
         }
         if (isNaN(dueDate.getTime())) dueDate = undefined;
+      }
+
+      // Validação: due_date >= issue_date
+      if (dueDate && date && dueDate < date) {
+        console.warn(`[Upload] Linha ${line}: vencimento (${dueDate.toISOString()}) anterior à emissão (${date.toISOString()}). Ajustando vencimento = emissão.`);
+        dueDate = date;
       }
 
       // 8. DOCUMENTO (opcional — número da NF, boleto, etc)
