@@ -7,6 +7,14 @@ import {
   formatCategoriesForPrompt,
   type ResolvedCategory,
 } from "../../shared/resolve-categories.js";
+import {
+  financialToolSchemas,
+  executeFinancialTool,
+} from "./financial-tools.js";
+import type {
+  ChatCompletionMessageParam,
+  ChatCompletionToolMessageParam,
+} from "openai/resources/chat/completions";
 
 const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
@@ -563,7 +571,215 @@ Explique de forma simples, prática e personalizada para este negócio. Use os d
   }
 }
 
-// Chat da Reunião Executiva — com contexto de setor/atividade
+// ============================================
+// CHAT COM FUNCTION CALLING (Nova arquitetura)
+// O LLM chama tools para buscar dados e o servidor
+// faz os cálculos. O LLM só narra os resultados.
+// ============================================
+export async function chatWithTools(
+  userId: string,
+  message: string,
+  companyId: string,
+  baseContext: string,
+  chatHistory: Array<{ role: string; content: string }>,
+  companyContext?: { sector?: string; activity?: string | null }
+) {
+  const sectorInfo = companyContext
+    ? `\nSETOR DA EMPRESA: ${companyContext.sector || "Não informado"}${companyContext.activity ? `\nATIVIDADE PRINCIPAL: ${companyContext.activity}` : ""}`
+    : "";
+
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const lastMonth = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, "0")}`;
+
+  const systemPrompt = `Você é o Lume, um CFO virtual inteligente. Seu papel é responder perguntas
+financeiras de forma clara e acessível para um empreendedor sem formação em finanças.
+${sectorInfo}
+
+DATA ATUAL: ${now.toISOString().slice(0, 10)}
+MÊS ATUAL: ${currentMonth}
+MÊS ANTERIOR: ${lastMonth}
+
+CONTEXTO BASE DA EMPRESA:
+${baseContext}
+
+COMO FUNCIONA:
+Você tem acesso a TOOLS (ferramentas) que consultam os dados financeiros reais da empresa.
+SEMPRE use as tools para buscar dados antes de responder. NUNCA invente números.
+Os totais retornados pelas tools são calculados no servidor e são SEMPRE corretos — use-os diretamente.
+
+REGRAS DE USO DAS TOOLS:
+1. Quando o usuário perguntar sobre custos/despesas de um mês → use buscar_transacoes com tipo="EXPENSE"
+2. Quando o usuário perguntar sobre receitas/faturamento → use buscar_transacoes com tipo="INCOME"
+3. Quando o usuário perguntar sobre margens ou lucratividade → use obter_dre_mensal
+4. Quando o usuário perguntar para comparar meses → use comparar_meses
+5. Quando o usuário perguntar sobre contas a pagar/receber → use obter_contas_pendentes
+6. Quando o usuário perguntar sobre evolução/tendência → use obter_evolucao_mensal
+7. Quando o usuário perguntar sobre saúde geral da empresa → use obter_resumo_empresa
+8. Quando o usuário perguntar sobre uma categoria específica → use buscar_por_categoria
+9. Para perguntas sobre custos/despesas de um mês, SEMPRE faça DUAS chamadas:
+   - buscar_transacoes com status="COMPLETED" (já pagos)
+   - buscar_transacoes com status="PENDING" (pendentes)
+   E apresente ambos separadamente, com total consolidado.
+
+REGRAS DE APRESENTAÇÃO:
+- Use linguagem simples e direta
+- Formate com parágrafos curtos para facilitar a leitura
+- Quando listar transações, use formato de lista com data, descrição e valor
+- SEMPRE use os totais retornados pelas tools (eles são calculados no servidor e são exatos)
+- NUNCA recalcule totais manualmente — confie nos valores das tools
+- Separe "Já realizadas" de "Previstas/Pendentes" quando aplicável
+- Sugira ações concretas e práticas
+- Se não encontrar dados, diga honestamente`;
+
+  // Montar mensagens com histórico
+  const messages: ChatCompletionMessageParam[] = [
+    { role: "system", content: systemPrompt },
+  ];
+
+  // Adicionar histórico de conversa
+  for (const h of chatHistory) {
+    messages.push({
+      role: h.role === "user" ? "user" : "assistant",
+      content: h.content,
+    });
+  }
+
+  // Mensagem atual do usuário
+  messages.push({ role: "user", content: message });
+
+  const startTime = Date.now();
+  let totalTokens = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  let toolCallsLog: Array<{ tool: string; args: any; result_preview: string }> = [];
+
+  // Loop de function calling (máximo 5 iterações para evitar loops infinitos)
+  const MAX_ITERATIONS = 5;
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.5,
+      max_tokens: 2500,
+      messages,
+      tools: financialToolSchemas,
+      tool_choice: i === 0 ? "auto" : "auto", // auto em todas as iterações
+    });
+
+    // Acumular tokens
+    if (completion.usage) {
+      totalTokens.prompt_tokens += completion.usage.prompt_tokens || 0;
+      totalTokens.completion_tokens += completion.usage.completion_tokens || 0;
+      totalTokens.total_tokens += completion.usage.total_tokens || 0;
+    }
+
+    const choice = completion.choices[0];
+    const assistantMessage = choice.message;
+
+    // Se não há tool calls, temos a resposta final
+    if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
+      const finalContent = assistantMessage.content || "";
+
+      // Registrar interação no banco
+      const latencyMs = Date.now() - startTime;
+      await prisma.aiInteraction.create({
+        data: {
+          userId,
+          type: "CHAT" as AiInteractionType,
+          promptSent: `[TOOLS CHAT] Pergunta: ${message}\nTools chamadas: ${toolCallsLog.map(t => t.tool).join(", ") || "nenhuma"}`,
+          responseReceived: finalContent,
+          tokenUsage: totalTokens,
+          model: "gpt-4o-mini",
+          latencyMs,
+        },
+      });
+
+      return {
+        message: finalContent,
+        tokenUsage: totalTokens,
+        toolCalls: toolCallsLog,
+      };
+    }
+
+    // Processar tool calls
+    // Adicionar a mensagem do assistente (com tool_calls) ao histórico
+    messages.push(assistantMessage as ChatCompletionMessageParam);
+
+    // Executar cada tool call e adicionar resultado
+    for (const toolCall of assistantMessage.tool_calls) {
+      const toolName = toolCall.function.name;
+      let toolArgs: Record<string, any> = {};
+      try {
+        toolArgs = JSON.parse(toolCall.function.arguments);
+      } catch {
+        toolArgs = {};
+      }
+
+      // Executar a tool no servidor (cálculos determinísticos!)
+      const result = await executeFinancialTool(toolName, toolArgs, companyId);
+
+      // Log para debug
+      toolCallsLog.push({
+        tool: toolName,
+        args: toolArgs,
+        result_preview: result.substring(0, 200) + (result.length > 200 ? "..." : ""),
+      });
+
+      // Adicionar resultado da tool ao histórico de mensagens
+      const toolMessage: ChatCompletionToolMessageParam = {
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: result,
+      };
+      messages.push(toolMessage);
+    }
+  }
+
+  // Se chegou aqui, atingiu o limite de iterações
+  // Forçar uma resposta final
+  messages.push({
+    role: "user",
+    content: "Por favor, responda agora com base nos dados já obtidos pelas tools.",
+  });
+
+  const finalCompletion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0.5,
+    max_tokens: 2500,
+    messages,
+  });
+
+  if (finalCompletion.usage) {
+    totalTokens.prompt_tokens += finalCompletion.usage.prompt_tokens || 0;
+    totalTokens.completion_tokens += finalCompletion.usage.completion_tokens || 0;
+    totalTokens.total_tokens += finalCompletion.usage.total_tokens || 0;
+  }
+
+  const finalContent = finalCompletion.choices[0]?.message?.content || "";
+  const latencyMs = Date.now() - startTime;
+
+  await prisma.aiInteraction.create({
+    data: {
+      userId,
+      type: "CHAT" as AiInteractionType,
+      promptSent: `[TOOLS CHAT - MAX ITER] Pergunta: ${message}\nTools chamadas: ${toolCallsLog.map(t => t.tool).join(", ")}`,
+      responseReceived: finalContent,
+      tokenUsage: totalTokens,
+      model: "gpt-4o-mini",
+      latencyMs,
+    },
+  });
+
+  return {
+    message: finalContent,
+    tokenUsage: totalTokens,
+    toolCalls: toolCallsLog,
+  };
+}
+
+// ============================================
+// CHAT LEGADO (mantido como fallback)
+// Usa prompt stuffing — será depreciado
+// ============================================
 export async function chat(
   userId: string,
   message: string,
@@ -585,43 +801,7 @@ REGRAS:
 - Sugira ações concretas e práticas
 - Se não souber algo, diga honestamente
 - Formate a resposta com parágrafos curtos para facilitar a leitura
-- Quando o usuário perguntar sobre uma despesa específica (ex: "energia", "aluguel", "internet", "salário"),
-  busque nas TRANSAÇÕES INDIVIDUAIS filtrando pela DESCRIÇÃO, não apenas pela categoria.
-  Liste cada transação individual com data, descrição e valor.
-- Uma categoria pode agrupar transações de naturezas diferentes. Exemplo: "Energia e Água" pode conter
-  "Conta de energia" e "Conta de internet". Sempre diferencie-as pela descrição.
 - Quando listar transações, use formato de lista com data, descrição e valor para facilitar a leitura.
-
-REGRAS DE PRECISÃO NUMÉRICA (OBRIGATÓRIO — LEIA COM ATENÇÃO):
-- NUNCA misture RECEITAS com DESPESAS na mesma soma. São categorias completamente diferentes.
-  Receitas (tipo "Receita" / INCOME) são entradas de dinheiro. Despesas (tipo "Despesa" / EXPENSE) são saídas.
-  Se o usuário perguntar "quais os custos", liste APENAS transações do tipo Despesa/EXPENSE. NUNCA inclua receitas.
-  Se o usuário perguntar "quais as receitas", liste APENAS transações do tipo Receita/INCOME. NUNCA inclua despesas.
-- Ao apresentar um TOTAL, ele DEVE ser a soma exata dos itens listados acima dele. Confira item por item.
-  Exemplo: se você listou 3 itens de R$ 100, R$ 200 e R$ 300, o total DEVE ser R$ 600. Não R$ 700, não R$ 500.
-- NUNCA use valores pré-calculados da seção "EVOLUÇÃO MENSAL DETALHADA" como total quando estiver listando transações individuais.
-  O total deve ser SEMPRE a soma dos itens que você efetivamente listou na resposta.
-- Se não tiver certeza da soma, liste os itens SEM total em vez de apresentar um total errado.
-- Cada transação no contexto tem um campo "Tipo" (Receita ou Despesa). USE esse campo para filtrar corretamente.
-  Formato no contexto: "Data | Receita/Despesa | Categoria | Descrição | Valor".
-  O segundo campo SEMPRE indica se é receita ou despesa. Verifique antes de incluir na lista.
-
-REGRAS SOBRE TRANSAÇÕES PENDENTES E FUTURAS (OBRIGATÓRIO):
-- O contexto inclui uma seção "TRANSAÇÕES FUTURAS E PENDENTES" com contas a pagar e a receber.
-- Quando o usuário perguntar sobre despesas, receitas, custos ou faturamento de um mês, você DEVE considerar
-  TANTO as transações concluídas QUANTO as pendentes. SEMPRE separe a resposta em duas seções:
-  1. "Já realizadas" — transações COMPLETED (já pagas/recebidas)
-  2. "Previstas/Pendentes" — transações PENDING (ainda não pagas/recebidas)
-  E ao final, mostre o TOTAL CONSOLIDADO (realizadas + pendentes).
-  Exemplo: "Despesas já pagas: R$ 170.000. Despesas previstas (pendentes): R$ 63.000. Total estimado do mês: R$ 233.000."
-- Quando o usuário perguntar "quais receitas vão entrar" ou "o que tenho pra pagar", use a seção de transações pendentes.
-- Transações marcadas como [EM ATRASO] são compromissos com vencimento já passado e que NÃO foram pagos/recebidos.
-  Quando o usuário perguntar sobre "pagamentos em atraso", "inadimplência" ou "contas vencidas",
-  você DEVE buscar na seção de transações pendentes por itens marcados com [EM ATRASO].
-  Se houver itens em atraso, SEMPRE liste-os com data de vencimento, descrição, valor e contraparte.
-  NUNCA diga "não há pagamentos em atraso" se existirem itens marcados [EM ATRASO] no contexto.
-- Ao totalizar uma categoria (ex: "Salários e Pró-Labore"), some TODAS as transações daquela categoria,
-  incluindo concluídas e pendentes. Apresente o total e depois o detalhamento.
 
 DADOS FINANCEIROS DA EMPRESA:
 ${financialContext}`;

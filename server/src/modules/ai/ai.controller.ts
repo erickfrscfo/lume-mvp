@@ -22,9 +22,21 @@ router.post("/chat", authMiddleware, async (req: Request, res: Response, next: N
     const userId = (req as any).userId;
     const companyId = (req as any).companyId;
 
-    const financialContext = await getEnrichedFinancialContext(companyId);
+    // Nova arquitetura: contexto base leve + function calling
+    const baseContext = await getBaseContext(companyId);
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { sector: true, activity: true },
+    });
 
-    const result = await aiService.chat(userId, message, financialContext, history);
+    const result = await aiService.chatWithTools(
+      userId,
+      message,
+      companyId,
+      baseContext,
+      history,
+      company ? { sector: company.sector, activity: company.activity } : undefined
+    );
     res.json({ success: true, data: result });
   } catch (error) {
     next(error);
@@ -328,7 +340,47 @@ function formatMonthKey(d: Date): string {
 }
 
 // ============================================
-// CONTEXTO FINANCEIRO ENRIQUECIDO
+// CONTEXTO BASE LEVE (para function calling)
+// Só informações básicas da empresa + cenários ativos.
+// Os dados financeiros são buscados via tools sob demanda.
+// ============================================
+async function getBaseContext(companyId: string): Promise<string> {
+  const company = await prisma.company.findUnique({ where: { id: companyId } });
+
+  // Cenários ativos (são poucos, vale incluir no contexto base)
+  const activeScenarios = await prisma.scenario.findMany({
+    where: { companyId, isActive: true },
+  });
+
+  const scenarioText = activeScenarios.length > 0
+    ? activeScenarios.map((s) => {
+        const adj = s.adjustments as any;
+        return `  - ${s.name} (${s.type}): ${adj?.monthlyRevenue ? `+R$ ${adj.monthlyRevenue}/mês receita` : ""} ${adj?.monthlyExpense ? `R$ ${adj.monthlyExpense}/mês despesa` : ""} ${adj?.startMonth ? `de ${adj.startMonth}` : ""} ${adj?.endMonth ? `até ${adj.endMonth}` : ""}`;
+      }).join("\n")
+    : "  Nenhum cenário ativo.";
+
+  // Contar transações para dar contexto de volume
+  const txCount = await prisma.transaction.count({ where: { companyId } });
+  const pendingCount = await prisma.transaction.count({
+    where: { companyId, status: { in: ["PENDING", "OVERDUE"] } },
+  });
+
+  return `EMPRESA: ${company?.name || "Não informado"}
+CNPJ: ${company?.cnpj || "Não informado"}
+SETOR: ${company?.sector || "Não informado"}
+ATIVIDADE: ${company?.activity || "Não informada"}
+TOTAL DE TRANSAÇÕES: ${txCount}
+TRANSAÇÕES PENDENTES: ${pendingCount}
+
+CENÁRIOS FINANCEIROS ATIVOS:
+${scenarioText}
+
+NOTA: Use as tools disponíveis para buscar dados financeiros detalhados. Não invente números.`;
+}
+
+// ============================================
+// CONTEXTO FINANCEIRO ENRIQUECIDO (LEGADO)
+// Mantido para uso pelo /explain e /scenario-chat
 // 
 // CORREÇÃO CRÍTICA (v2):
 // - Agora usa APENAS transações COMPLETED (igual ao Dashboard)
