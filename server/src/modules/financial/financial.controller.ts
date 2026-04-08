@@ -711,4 +711,106 @@ router.get("/cost-breakdown", authMiddleware, async (req: Request, res: Response
   }
 });
 
+// ============================================
+// GET /api/financial/pending-details
+// Retorna transações PENDING e OVERDUE com detalhes para contexto da IA
+// Permite que a Reunião Executiva responda sobre transações futuras
+// ============================================
+router.get("/pending-details", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const companyId = (req as any).companyId;
+
+    const pendingTransactions = await prisma.transaction.findMany({
+      where: {
+        companyId,
+        status: { in: ["PENDING", "OVERDUE"] },
+      },
+      include: {
+        category: { select: { name: true, code: true } },
+        counterparty: { select: { name: true, type: true } },
+        detail: { select: { dueDate: true, documentNumber: true } },
+      },
+      orderBy: { date: "asc" },
+    });
+
+    // Separar por tipo e formatar
+    const receivables = pendingTransactions
+      .filter((t) => t.tipo_transacao === "INCOME")
+      .map((t) => ({
+        id: t.id,
+        description: t.description,
+        amount: Number(t.amount),
+        date: t.date,
+        dueDate: t.detail?.dueDate || t.date,
+        status: t.status,
+        counterparty: t.counterparty?.name || "Não identificado",
+        category: t.category?.name || "Sem categoria",
+        documentNumber: t.detail?.documentNumber || null,
+      }));
+
+    const payables = pendingTransactions
+      .filter((t) => t.tipo_transacao === "EXPENSE")
+      .map((t) => ({
+        id: t.id,
+        description: t.description,
+        amount: Number(t.amount),
+        date: t.date,
+        dueDate: t.detail?.dueDate || t.date,
+        status: t.status,
+        counterparty: t.counterparty?.name || "Não identificado",
+        category: t.category?.name || "Sem categoria",
+        documentNumber: t.detail?.documentNumber || null,
+      }));
+
+    // Agrupar por mês de vencimento
+    const byMonth: Record<string, { receivables: number; payables: number; net: number; count: number }> = {};
+
+    receivables.forEach((t) => {
+      const monthKey = formatMonthKey(new Date(t.dueDate));
+      if (!byMonth[monthKey]) byMonth[monthKey] = { receivables: 0, payables: 0, net: 0, count: 0 };
+      byMonth[monthKey].receivables += t.amount;
+      byMonth[monthKey].net += t.amount;
+      byMonth[monthKey].count++;
+    });
+
+    payables.forEach((t) => {
+      const monthKey = formatMonthKey(new Date(t.dueDate));
+      if (!byMonth[monthKey]) byMonth[monthKey] = { receivables: 0, payables: 0, net: 0, count: 0 };
+      byMonth[monthKey].payables += t.amount;
+      byMonth[monthKey].net -= t.amount;
+      byMonth[monthKey].count++;
+    });
+
+    const monthlyForecast = Object.entries(byMonth)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, data]) => ({ month, ...data }));
+
+    // Totais
+    const totalReceivables = receivables.reduce((s, t) => s + t.amount, 0);
+    const totalPayables = payables.reduce((s, t) => s + t.amount, 0);
+    const overdueReceivables = receivables.filter((t) => t.status === "OVERDUE");
+    const overduePayables = payables.filter((t) => t.status === "OVERDUE");
+
+    res.json({
+      success: true,
+      data: {
+        receivables,
+        payables,
+        monthlyForecast,
+        totals: {
+          totalReceivables,
+          totalPayables,
+          netPending: totalReceivables - totalPayables,
+          overdueReceivablesCount: overdueReceivables.length,
+          overdueReceivablesAmount: overdueReceivables.reduce((s, t) => s + t.amount, 0),
+          overduePayablesCount: overduePayables.length,
+          overduePayablesAmount: overduePayables.reduce((s, t) => s + t.amount, 0),
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

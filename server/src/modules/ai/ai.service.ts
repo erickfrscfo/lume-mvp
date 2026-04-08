@@ -591,6 +591,12 @@ REGRAS:
 - Uma categoria pode agrupar transações de naturezas diferentes. Exemplo: "Energia e Água" pode conter
   "Conta de energia" e "Conta de internet". Sempre diferencie-as pela descrição.
 - Quando listar transações, use formato de lista com data, descrição e valor para facilitar a leitura.
+- TRANSAÇÕES FUTURAS: O contexto inclui uma seção "TRANSAÇÕES FUTURAS E PENDENTES" com contas a pagar e a receber.
+  Use esses dados para responder perguntas sobre receitas previstas, vencimentos futuros, inadimplência e fluxo futuro.
+- Diferencie claramente dados REALIZADOS (já pagos/recebidos) de dados PREVISTOS (pendentes/futuros).
+  Exemplo: "Você já recebeu R$ 50.000 este mês e tem mais R$ 120.000 previstos para entrar."
+- Quando o usuário perguntar "quais receitas vão entrar" ou "o que tenho pra pagar", use a seção de transações pendentes.
+- Transações marcadas como [EM ATRASO] são compromissos vencidos e não pagos/recebidos — alerte o usuário sobre elas.
 
 DADOS FINANCEIROS DA EMPRESA:
 ${financialContext}`;

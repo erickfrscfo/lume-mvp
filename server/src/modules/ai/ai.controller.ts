@@ -669,6 +669,116 @@ Formato: Data Efetiva | Tipo | Categoria | Descrição | Valor | Classificação
 ${txLines}`;
   }
 
+  // ============================================
+  // TRANSAÇÕES FUTURAS: PENDING e OVERDUE
+  // Permite à IA responder sobre contas a pagar/receber,
+  // vencimentos futuros, inadimplência, etc.
+  // ============================================
+  const pendingTransactions = await prisma.transaction.findMany({
+    where: {
+      companyId,
+      status: { in: ["PENDING", "OVERDUE"] },
+    },
+    include: {
+      category: { select: { name: true, code: true } },
+      counterparty: { select: { name: true, type: true } },
+      detail: { select: { dueDate: true, documentNumber: true } },
+    },
+    orderBy: { date: "asc" },
+  });
+
+  if (pendingTransactions.length > 0) {
+    const receivables = pendingTransactions.filter((t) => t.tipo_transacao === "INCOME");
+    const payables = pendingTransactions.filter((t) => t.tipo_transacao === "EXPENSE");
+    const overdueReceivables = receivables.filter((t) => t.status === "OVERDUE");
+    const overduePayables = payables.filter((t) => t.status === "OVERDUE");
+
+    const totalReceivables = receivables.reduce((s, t) => s + Number(t.amount), 0);
+    const totalPayables = payables.reduce((s, t) => s + Number(t.amount), 0);
+    const totalOverdueReceivables = overdueReceivables.reduce((s, t) => s + Number(t.amount), 0);
+    const totalOverduePayables = overduePayables.reduce((s, t) => s + Number(t.amount), 0);
+
+    // Agrupar por mês de vencimento
+    const pendingByMonth: Record<string, { receivables: number; payables: number; count: number }> = {};
+    pendingTransactions.forEach((t) => {
+      const dueDate = t.detail?.dueDate || t.date;
+      const mk = formatMonthKey(new Date(dueDate));
+      if (!pendingByMonth[mk]) pendingByMonth[mk] = { receivables: 0, payables: 0, count: 0 };
+      if (t.tipo_transacao === "INCOME") {
+        pendingByMonth[mk].receivables += Number(t.amount);
+      } else {
+        pendingByMonth[mk].payables += Number(t.amount);
+      }
+      pendingByMonth[mk].count++;
+    });
+
+    const monthlyPendingText = Object.entries(pendingByMonth)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([mk, d]) => {
+        const net = d.receivables - d.payables;
+        return `  ${mk}: A receber R$ ${d.receivables.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} | A pagar R$ ${d.payables.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} | Líquido R$ ${net.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} (${d.count} transações)`;
+      }).join("\n");
+
+    // Detalhamento das receitas a receber (top 30)
+    const receivableLines = receivables
+      .sort((a, b) => Number(b.amount) - Number(a.amount))
+      .slice(0, 30)
+      .map((t) => {
+        const dueDate = t.detail?.dueDate || t.date;
+        const dateStr = `${String(new Date(dueDate).getDate()).padStart(2, "0")}/${String(new Date(dueDate).getMonth() + 1).padStart(2, "0")}/${new Date(dueDate).getFullYear()}`;
+        const statusLabel = t.status === "OVERDUE" ? " [EM ATRASO]" : "";
+        const counterpartyName = t.counterparty?.name || "Não identificado";
+        const catName = t.category?.name || "Sem categoria";
+        return `  - ${dateStr} | ${catName} | "${t.description}" | R$ ${Number(t.amount).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} | ${counterpartyName}${statusLabel}`;
+      }).join("\n");
+
+    // Detalhamento das despesas a pagar (top 30)
+    const payableLines = payables
+      .sort((a, b) => Number(b.amount) - Number(a.amount))
+      .slice(0, 30)
+      .map((t) => {
+        const dueDate = t.detail?.dueDate || t.date;
+        const dateStr = `${String(new Date(dueDate).getDate()).padStart(2, "0")}/${String(new Date(dueDate).getMonth() + 1).padStart(2, "0")}/${new Date(dueDate).getFullYear()}`;
+        const statusLabel = t.status === "OVERDUE" ? " [EM ATRASO]" : "";
+        const counterpartyName = t.counterparty?.name || "Não identificado";
+        const catName = t.category?.name || "Sem categoria";
+        return `  - ${dateStr} | ${catName} | "${t.description}" | R$ ${Number(t.amount).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} | ${counterpartyName}${statusLabel}`;
+      }).join("\n");
+
+    context += `\n\n=== TRANSAÇÕES FUTURAS E PENDENTES ===
+IMPORTANTE: Os dados abaixo são transações que AINDA NÃO FORAM PAGAS/RECEBIDAS.
+São compromissos financeiros já registrados no sistema com vencimento futuro ou em atraso.
+Use estes dados para responder perguntas sobre receitas previstas, contas a pagar, inadimplência e fluxo futuro.
+
+RESUMO PENDENTE:
+- Total a Receber: R$ ${totalReceivables.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} (${receivables.length} transações)
+- Total a Pagar: R$ ${totalPayables.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} (${payables.length} transações)
+- Saldo Líquido Pendente: R$ ${(totalReceivables - totalPayables).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
+
+    if (overdueReceivables.length > 0) {
+      context += `\n- INADIMPLÊNCIA: ${overdueReceivables.length} receitas em atraso totalizando R$ ${totalOverdueReceivables.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
+    }
+    if (overduePayables.length > 0) {
+      context += `\n- PAGAMENTOS EM ATRASO: ${overduePayables.length} despesas em atraso totalizando R$ ${totalOverduePayables.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
+    }
+
+    context += `\n\nPREVISÃO POR MÊS (baseada em transações já lançadas):\n${monthlyPendingText}`;
+
+    if (receivableLines) {
+      context += `\n\nRECEITAS PREVISTAS (a receber) — top ${Math.min(receivables.length, 30)}:\nFormato: Vencimento | Categoria | Descrição | Valor | Contraparte\n${receivableLines}`;
+      if (receivables.length > 30) {
+        context += `\n  ... e mais ${receivables.length - 30} receitas pendentes`;
+      }
+    }
+
+    if (payableLines) {
+      context += `\n\nDESPESAS PREVISTAS (a pagar) — top ${Math.min(payables.length, 30)}:\nFormato: Vencimento | Categoria | Descrição | Valor | Contraparte\n${payableLines}`;
+      if (payables.length > 30) {
+        context += `\n  ... e mais ${payables.length - 30} despesas pendentes`;
+      }
+    }
+  }
+
   if (extraContext) {
     context += `\n\n=== CONTEXTO ADICIONAL (dados da tela do usuário) ===\n${extraContext}`;
   }
