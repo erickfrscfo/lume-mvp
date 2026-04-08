@@ -688,10 +688,16 @@ ${txLines}`;
   });
 
   if (pendingTransactions.length > 0) {
+    const now = new Date();
     const receivables = pendingTransactions.filter((t) => t.tipo_transacao === "INCOME");
     const payables = pendingTransactions.filter((t) => t.tipo_transacao === "EXPENSE");
-    const overdueReceivables = receivables.filter((t) => t.status === "OVERDUE");
-    const overduePayables = payables.filter((t) => t.status === "OVERDUE");
+    // Detectar atraso DINAMICAMENTE: dueDate < hoje (não depende do status OVERDUE)
+    const isOverdue = (t: any): boolean => {
+      const dueDate = t.detail?.dueDate ? new Date(t.detail.dueDate) : null;
+      return dueDate !== null && dueDate < now;
+    };
+    const overdueReceivables = receivables.filter(isOverdue);
+    const overduePayables = payables.filter(isOverdue);
 
     const totalReceivables = receivables.reduce((s, t) => s + Number(t.amount), 0);
     const totalPayables = payables.reduce((s, t) => s + Number(t.amount), 0);
@@ -726,7 +732,7 @@ ${txLines}`;
       .map((t) => {
         const dueDate = t.detail?.dueDate || t.date;
         const dateStr = `${String(new Date(dueDate).getDate()).padStart(2, "0")}/${String(new Date(dueDate).getMonth() + 1).padStart(2, "0")}/${new Date(dueDate).getFullYear()}`;
-        const statusLabel = t.status === "OVERDUE" ? " [EM ATRASO]" : "";
+        const statusLabel = isOverdue(t) ? " [EM ATRASO]" : "";
         const counterpartyName = t.counterparty?.name || "Não identificado";
         const catName = t.category?.name || "Sem categoria";
         return `  - ${dateStr} | ${catName} | "${t.description}" | R$ ${Number(t.amount).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} | ${counterpartyName}${statusLabel}`;
@@ -739,7 +745,7 @@ ${txLines}`;
       .map((t) => {
         const dueDate = t.detail?.dueDate || t.date;
         const dateStr = `${String(new Date(dueDate).getDate()).padStart(2, "0")}/${String(new Date(dueDate).getMonth() + 1).padStart(2, "0")}/${new Date(dueDate).getFullYear()}`;
-        const statusLabel = t.status === "OVERDUE" ? " [EM ATRASO]" : "";
+        const statusLabel = isOverdue(t) ? " [EM ATRASO]" : "";
         const counterpartyName = t.counterparty?.name || "Não identificado";
         const catName = t.category?.name || "Sem categoria";
         return `  - ${dateStr} | ${catName} | "${t.description}" | R$ ${Number(t.amount).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} | ${counterpartyName}${statusLabel}`;
