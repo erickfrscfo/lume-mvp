@@ -365,13 +365,17 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
     }
 
     // Filtro de data de emissão/criação
+    // CORREÇÃO TIMEZONE: Usar T00:00:00.000Z (meia-noite UTC) em vez de T03:00:00.000Z.
+    // As datas no banco são armazenadas como UTC meia-noite (ex: 2026-04-01T00:00:00.000Z).
+    // Com T03:00:00.000Z, o filtro gte para "2026-04-01" virava 01/04 03:00 UTC,
+    // excluindo transações de 01/04 00:00 UTC (5 transações sumiam de abril).
     if (startDate || endDate) {
       where.date = {};
       if (startDate) {
-        where.date.gte = new Date(startDate + "T03:00:00.000Z");
+        where.date.gte = new Date(startDate + "T00:00:00.000Z");
       }
       if (endDate) {
-        const endDateObj = new Date(endDate + "T03:00:00.000Z");
+        const endDateObj = new Date(endDate + "T00:00:00.000Z");
         endDateObj.setDate(endDateObj.getDate() + 1);
         endDateObj.setMilliseconds(endDateObj.getMilliseconds() - 1);
         where.date.lte = endDateObj;
@@ -379,13 +383,14 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
     }
 
     // NOVO: Filtro por data de vencimento (via TransactionDetail)
+    // CORREÇÃO TIMEZONE: Mesma lógica — usar T00:00:00.000Z para consistência com datas UTC.
     if (dueDateStart || dueDateEnd) {
       where.detail = {};
       if (dueDateStart) {
-        where.detail.dueDate = { ...(where.detail.dueDate || {}), gte: new Date(dueDateStart + "T03:00:00.000Z") };
+        where.detail.dueDate = { ...(where.detail.dueDate || {}), gte: new Date(dueDateStart + "T00:00:00.000Z") };
       }
       if (dueDateEnd) {
-        const dueDateEndObj = new Date(dueDateEnd + "T03:00:00.000Z");
+        const dueDateEndObj = new Date(dueDateEnd + "T00:00:00.000Z");
         dueDateEndObj.setDate(dueDateEndObj.getDate() + 1);
         dueDateEndObj.setMilliseconds(dueDateEndObj.getMilliseconds() - 1);
         where.detail.dueDate = { ...(where.detail.dueDate || {}), lte: dueDateEndObj };
