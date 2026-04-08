@@ -592,6 +592,20 @@ REGRAS:
   "Conta de energia" e "Conta de internet". Sempre diferencie-as pela descrição.
 - Quando listar transações, use formato de lista com data, descrição e valor para facilitar a leitura.
 
+REGRAS DE PRECISÃO NUMÉRICA (OBRIGATÓRIO — LEIA COM ATENÇÃO):
+- NUNCA misture RECEITAS com DESPESAS na mesma soma. São categorias completamente diferentes.
+  Receitas (tipo "Receita" / INCOME) são entradas de dinheiro. Despesas (tipo "Despesa" / EXPENSE) são saídas.
+  Se o usuário perguntar "quais os custos", liste APENAS transações do tipo Despesa/EXPENSE. NUNCA inclua receitas.
+  Se o usuário perguntar "quais as receitas", liste APENAS transações do tipo Receita/INCOME. NUNCA inclua despesas.
+- Ao apresentar um TOTAL, ele DEVE ser a soma exata dos itens listados acima dele. Confira item por item.
+  Exemplo: se você listou 3 itens de R$ 100, R$ 200 e R$ 300, o total DEVE ser R$ 600. Não R$ 700, não R$ 500.
+- NUNCA use valores pré-calculados da seção "EVOLUÇÃO MENSAL DETALHADA" como total quando estiver listando transações individuais.
+  O total deve ser SEMPRE a soma dos itens que você efetivamente listou na resposta.
+- Se não tiver certeza da soma, liste os itens SEM total em vez de apresentar um total errado.
+- Cada transação no contexto tem um campo "Tipo" (Receita ou Despesa). USE esse campo para filtrar corretamente.
+  Formato no contexto: "Data | Receita/Despesa | Categoria | Descrição | Valor".
+  O segundo campo SEMPRE indica se é receita ou despesa. Verifique antes de incluir na lista.
+
 REGRAS SOBRE TRANSAÇÕES PENDENTES E FUTURAS (OBRIGATÓRIO):
 - O contexto inclui uma seção "TRANSAÇÕES FUTURAS E PENDENTES" com contas a pagar e a receber.
 - Quando o usuário perguntar sobre despesas, receitas, custos ou faturamento de um mês, você DEVE considerar
