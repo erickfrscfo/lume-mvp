@@ -360,8 +360,23 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
     }
 
     // NOVO: Filtro por status
-    if (status === "COMPLETED" || status === "PENDING" || status === "OVERDUE") {
+    // CORREÇÃO: Para "OVERDUE", não basta filtrar por status no banco,
+    // pois muitas transações vencidas ainda têm status="PENDING" (nunca foram atualizadas).
+    // A detecção de vencimento é feita dinamicamente: dueDate < agora E sem pagamento/recebimento.
+    if (status === "COMPLETED" || status === "PENDING") {
       where.status = status;
+    } else if (status === "OVERDUE") {
+      // Buscar transações PENDING ou OVERDUE que têm dueDate no passado e não foram pagas/recebidas
+      where.status = { in: ["PENDING", "OVERDUE"] };
+      where.detail = {
+        ...where.detail,
+        dueDate: {
+          ...(where.detail?.dueDate || {}),
+          lt: new Date(), // dueDate antes de agora = vencida
+        },
+        paymentDate: null,
+        receiptDate: null,
+      };
     }
 
     // Filtro de data de emissão/criação
@@ -384,10 +399,12 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
 
     // NOVO: Filtro por data de vencimento (via TransactionDetail)
     // CORREÇÃO TIMEZONE: Mesma lógica — usar T00:00:00.000Z para consistência com datas UTC.
+    // CORREÇÃO: Usar spread para não sobrescrever where.detail já definido pelo filtro OVERDUE.
     if (dueDateStart || dueDateEnd) {
-      where.detail = {};
+      if (!where.detail) where.detail = {};
+      const existingDueDate = where.detail.dueDate || {};
       if (dueDateStart) {
-        where.detail.dueDate = { ...(where.detail.dueDate || {}), gte: new Date(dueDateStart + "T00:00:00.000Z") };
+        where.detail.dueDate = { ...existingDueDate, gte: new Date(dueDateStart + "T00:00:00.000Z") };
       }
       if (dueDateEnd) {
         const dueDateEndObj = new Date(dueDateEnd + "T00:00:00.000Z");
