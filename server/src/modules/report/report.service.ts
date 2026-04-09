@@ -13,7 +13,7 @@
 
 import { prisma } from "../../shared/database.js";
 import { getDREProfile, isDirectCost as isDirectCostFn, isTax as isTaxFn } from "../../shared/dre-profiles.js";
-import { callAi } from "../ai/ai.service.js";
+import { callAi, chatWithTools } from "../ai/ai.service.js";
 import {
   STANDARD_INDICATORS,
   getIndicatorById,
@@ -926,6 +926,81 @@ async function buildFinancialSummary(companyId: string, month: string): Promise<
     .map((c) => `  - ${c.name}: ${formatBRL(c.total)}`)
     .join("\n");
 
+  // ── Pagamentos pendentes e atrasados ──
+  const now = new Date();
+  const pendingTransactions = await prisma.transaction.findMany({
+    where: {
+      companyId,
+      status: "PENDING",
+      tipo_transacao: "EXPENSE",
+    },
+    include: { category: true, counterparty: true, detail: true },
+  });
+
+  const atrasados = pendingTransactions.filter((tx) => {
+    const dueDate = tx.detail?.dueDate || tx.date;
+    return new Date(dueDate) < now;
+  });
+  const totalAtrasado = atrasados.reduce((sum, tx) => sum + n(tx.amount), 0);
+  const atrasadosDetail = atrasados
+    .sort((a, b) => n(b.amount) - n(a.amount))
+    .slice(0, 15)
+    .map((tx) => {
+      const dueDate = tx.detail?.dueDate || tx.date;
+      const dueDateStr = new Date(dueDate).toLocaleDateString("pt-BR");
+      const contraparte = tx.counterparty?.name || "Sem contraparte";
+      const categoria = tx.category?.name || "Sem categoria";
+      return `  - ${tx.description} | ${formatBRL(n(tx.amount))} | Vencimento: ${dueDateStr} | ${contraparte} | ${categoria}`;
+    })
+    .join("\n");
+
+  const pendentesNaoAtrasados = pendingTransactions.filter((tx) => {
+    const dueDate = tx.detail?.dueDate || tx.date;
+    return new Date(dueDate) >= now;
+  });
+  const totalPendente = pendentesNaoAtrasados.reduce((sum, tx) => sum + n(tx.amount), 0);
+  const pendentesDetail = pendentesNaoAtrasados
+    .sort((a, b) => {
+      const dateA = a.detail?.dueDate || a.date;
+      const dateB = b.detail?.dueDate || b.date;
+      return new Date(dateA).getTime() - new Date(dateB).getTime();
+    })
+    .slice(0, 15)
+    .map((tx) => {
+      const dueDate = tx.detail?.dueDate || tx.date;
+      const dueDateStr = new Date(dueDate).toLocaleDateString("pt-BR");
+      const contraparte = tx.counterparty?.name || "Sem contraparte";
+      const categoria = tx.category?.name || "Sem categoria";
+      return `  - ${tx.description} | ${formatBRL(n(tx.amount))} | Vencimento: ${dueDateStr} | ${contraparte} | ${categoria}`;
+    })
+    .join("\n");
+
+  // ── Receitas pendentes (a receber) ──
+  const pendingIncome = await prisma.transaction.findMany({
+    where: {
+      companyId,
+      status: "PENDING",
+      tipo_transacao: "INCOME",
+    },
+    include: { counterparty: true, detail: true },
+  });
+
+  const recebiveisAtrasados = pendingIncome.filter((tx) => {
+    const dueDate = tx.detail?.dueDate || tx.date;
+    return new Date(dueDate) < now;
+  });
+  const totalRecebiveisAtrasados = recebiveisAtrasados.reduce((sum, tx) => sum + n(tx.amount), 0);
+  const recebiveisAtrasadosDetail = recebiveisAtrasados
+    .sort((a, b) => n(b.amount) - n(a.amount))
+    .slice(0, 10)
+    .map((tx) => {
+      const dueDate = tx.detail?.dueDate || tx.date;
+      const dueDateStr = new Date(dueDate).toLocaleDateString("pt-BR");
+      const contraparte = tx.counterparty?.name || "Sem contraparte";
+      return `  - ${tx.description} | ${formatBRL(n(tx.amount))} | Vencimento: ${dueDateStr} | ${contraparte}`;
+    })
+    .join("\n");
+
   const [year, m] = month.split("-");
   const monthNames = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
   const monthLabel = `${monthNames[parseInt(m) - 1]} de ${year}`;
@@ -944,7 +1019,19 @@ ${despesasPorCategoria || "  (sem dados)"}
 ${receitasPorCliente || "  (sem dados)"}
 
 --- Top 10 Fornecedores (Despesa) ---
-${despesasPorFornecedor || "  (sem dados)"}`;
+${despesasPorFornecedor || "  (sem dados)"}
+
+--- Pagamentos ATRASADOS (vencidos e não pagos) ---
+Total atrasado: ${formatBRL(totalAtrasado)} (${atrasados.length} transações)
+${atrasadosDetail || "  (nenhum pagamento atrasado)"}
+
+--- Pagamentos PENDENTES (a vencer) ---
+Total pendente: ${formatBRL(totalPendente)} (${pendentesNaoAtrasados.length} transações)
+${pendentesDetail || "  (nenhum pagamento pendente)"}
+
+--- Recebíveis ATRASADOS (clientes que não pagaram) ---
+Total a receber atrasado: ${formatBRL(totalRecebiveisAtrasados)} (${recebiveisAtrasados.length} transações)
+${recebiveisAtrasadosDetail || "  (nenhum recebível atrasado)"}`;
 }
 
 /**
@@ -957,24 +1044,32 @@ async function calculateCustomIndicator(
   customIndicator: { id: string; name: string; description: string; formula: string; createdByUserId: string }
 ): Promise<CalculatedIndicator> {
   try {
+    // Buscar contexto da empresa para o chatWithTools
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { sector: true, activity: true },
+    });
+
+    // Montar o resumo básico como baseContext para o chatWithTools
     const summary = await buildFinancialSummary(companyId, month);
 
-    const systemPrompt = `Você é um analista financeiro que calcula indicadores personalizados com base em dados reais.
+    const [year, m] = month.split("-");
+    const monthNames = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+    const monthLabel = `${monthNames[parseInt(m) - 1]} de ${year}`;
 
-Você receberá:
-1. O nome e a fórmula de um indicador personalizado
-2. Um resumo financeiro completo do mês
+    // Usar chatWithTools para que a IA tenha acesso às tools (buscar_transacoes, obter_contas_pendentes, etc.)
+    const userMessage = `Preciso que você calcule o seguinte indicador personalizado para ${monthLabel}:
 
-Sua tarefa é:
-1. Analisar os dados financeiros
-2. Calcular o valor do indicador com base na fórmula descrita
-3. Retornar o resultado
+INDICADOR: ${customIndicator.name}
+DESCRIÇÃO: ${customIndicator.description}
+FÓRMULA: ${customIndicator.formula}
 
-RETORNE APENAS um JSON com este formato:
+Use as ferramentas disponíveis para buscar os dados reais necessários. NÃO invente dados.
+Após calcular, retorne APENAS um JSON com este formato exato:
 {
   "value": "valor formatado para exibição (ex: R$ 12.345,67 ou 23,5% ou 15 dias)",
   "rawValue": 12345.67,
-  "description": "Texto explicativo em linguagem simples com os valores reais encontrados",
+  "description": "Texto explicativo curto em linguagem simples com os valores reais encontrados",
   "unit": "BRL" ou "PERCENT" ou "DAYS" ou "COUNT" ou "TEXT",
   "available": true ou false,
   "unavailableReason": "Se não disponível, explique por quê"
@@ -982,33 +1077,27 @@ RETORNE APENAS um JSON com este formato:
 
 Se os dados não forem suficientes para calcular o indicador, retorne available: false com uma explicação clara.`;
 
-    const userPrompt = `INDICADOR: ${customIndicator.name}
-DESCRIÇÃO: ${customIndicator.description}
-FÓRMULA: ${customIndicator.formula}
-
-${summary}`;
-
-    const response = await callAi({
-      userId: customIndicator.createdByUserId,
-      type: "CHAT",
-      systemPrompt,
-      userPrompt,
-      temperature: 0.2,
-      maxTokens: 500,
-    });
+    const response = await chatWithTools(
+      customIndicator.createdByUserId,
+      userMessage,
+      companyId,
+      summary, // baseContext com resumo financeiro
+      [],      // sem histórico de chat
+      company ? { sector: company.sector, activity: company.activity } : undefined
+    );
 
     // Extrair JSON da resposta
-    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
+    const jsonMatch = response.message.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
+      // Se não retornou JSON, tentar usar a resposta como texto
       return {
         id: customIndicator.id,
         name: customIndicator.name,
-        value: "Erro ao interpretar",
+        value: response.message.slice(0, 100),
         rawValue: null,
-        description: "A IA não conseguiu calcular este indicador. Tente reformular a descrição.",
+        description: response.message,
         unit: "TEXT",
-        available: false,
-        unavailableReason: "Resposta da IA não continha JSON válido.",
+        available: true,
       };
     }
 
