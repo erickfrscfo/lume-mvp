@@ -13,6 +13,7 @@
 
 import { prisma } from "../../shared/database.js";
 import { getDREProfile, isDirectCost as isDirectCostFn, isTax as isTaxFn } from "../../shared/dre-profiles.js";
+import { callAi } from "../ai/ai.service.js";
 import {
   STANDARD_INDICATORS,
   getIndicatorById,
@@ -851,7 +852,196 @@ const calculators: Record<string, Calculator> = {
 };
 
 // ============================================
+// CÁLCULO DE INDICADORES CUSTOMIZADOS VIA IA
+// ============================================
+
+/**
+ * Gera um resumo financeiro do mês para enviar à IA.
+ * Inclui receitas, despesas por categoria, margens, etc.
+ */
+async function buildFinancialSummary(companyId: string, month: string): Promise<string> {
+  const range = parseMonth(month);
+  const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+  const receitas = transactions.filter((tx) => tx.tipo_transacao === "INCOME");
+  const despesas = transactions.filter((tx) => tx.tipo_transacao === "EXPENSE");
+
+  const totalReceita = receitas.reduce((sum, tx) => sum + n(tx.amount), 0);
+  const totalDespesa = despesas.reduce((sum, tx) => sum + n(tx.amount), 0);
+  const lucroLiquido = totalReceita - totalDespesa;
+
+  // Agrupar despesas por categoria
+  const catMap = new Map<string, { name: string; code: string; total: number }>();
+  despesas.forEach((tx) => {
+    if (tx.category) {
+      const key = tx.category.code;
+      const existing = catMap.get(key);
+      if (existing) {
+        existing.total += n(tx.amount);
+      } else {
+        catMap.set(key, { name: tx.category.name, code: tx.category.code, total: n(tx.amount) });
+      }
+    }
+  });
+  const despesasPorCategoria = Array.from(catMap.values())
+    .sort((a, b) => b.total - a.total)
+    .map((c) => `  - ${c.code} ${c.name}: ${formatBRL(c.total)}`)
+    .join("\n");
+
+  // Agrupar receitas por contraparte
+  const clienteMap = new Map<string, { name: string; total: number }>();
+  receitas.forEach((tx) => {
+    if (tx.counterparty) {
+      const key = tx.counterparty.id;
+      const existing = clienteMap.get(key);
+      if (existing) {
+        existing.total += n(tx.amount);
+      } else {
+        clienteMap.set(key, { name: tx.counterparty.name, total: n(tx.amount) });
+      }
+    }
+  });
+  const receitasPorCliente = Array.from(clienteMap.values())
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10)
+    .map((c) => `  - ${c.name}: ${formatBRL(c.total)}`)
+    .join("\n");
+
+  // Agrupar despesas por contraparte (fornecedores)
+  const fornecedorMap = new Map<string, { name: string; total: number }>();
+  despesas.forEach((tx) => {
+    if (tx.counterparty) {
+      const key = tx.counterparty.id;
+      const existing = fornecedorMap.get(key);
+      if (existing) {
+        existing.total += n(tx.amount);
+      } else {
+        fornecedorMap.set(key, { name: tx.counterparty.name, total: n(tx.amount) });
+      }
+    }
+  });
+  const despesasPorFornecedor = Array.from(fornecedorMap.values())
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10)
+    .map((c) => `  - ${c.name}: ${formatBRL(c.total)}`)
+    .join("\n");
+
+  const [year, m] = month.split("-");
+  const monthNames = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+  const monthLabel = `${monthNames[parseInt(m) - 1]} de ${year}`;
+
+  return `=== RESUMO FINANCEIRO — ${monthLabel} ===
+
+Receita Total: ${formatBRL(totalReceita)} (${receitas.length} transações)
+Despesa Total: ${formatBRL(totalDespesa)} (${despesas.length} transações)
+Lucro Líquido: ${formatBRL(lucroLiquido)}
+Margem Líquida: ${totalReceita > 0 ? formatPercent((lucroLiquido / totalReceita) * 100) : "N/A"}
+
+--- Despesas por Categoria ---
+${despesasPorCategoria || "  (sem dados)"}
+
+--- Top 10 Clientes (Receita) ---
+${receitasPorCliente || "  (sem dados)"}
+
+--- Top 10 Fornecedores (Despesa) ---
+${despesasPorFornecedor || "  (sem dados)"}`;
+}
+
+/**
+ * Calcula um indicador customizado usando a IA.
+ * Envia o resumo financeiro + a fórmula do indicador para a IA interpretar.
+ */
+async function calculateCustomIndicator(
+  companyId: string,
+  month: string,
+  customIndicator: { id: string; name: string; description: string; formula: string; createdByUserId: string }
+): Promise<CalculatedIndicator> {
+  try {
+    const summary = await buildFinancialSummary(companyId, month);
+
+    const systemPrompt = `Você é um analista financeiro que calcula indicadores personalizados com base em dados reais.
+
+Você receberá:
+1. O nome e a fórmula de um indicador personalizado
+2. Um resumo financeiro completo do mês
+
+Sua tarefa é:
+1. Analisar os dados financeiros
+2. Calcular o valor do indicador com base na fórmula descrita
+3. Retornar o resultado
+
+RETORNE APENAS um JSON com este formato:
+{
+  "value": "valor formatado para exibição (ex: R$ 12.345,67 ou 23,5% ou 15 dias)",
+  "rawValue": 12345.67,
+  "description": "Texto explicativo em linguagem simples com os valores reais encontrados",
+  "unit": "BRL" ou "PERCENT" ou "DAYS" ou "COUNT" ou "TEXT",
+  "available": true ou false,
+  "unavailableReason": "Se não disponível, explique por quê"
+}
+
+Se os dados não forem suficientes para calcular o indicador, retorne available: false com uma explicação clara.`;
+
+    const userPrompt = `INDICADOR: ${customIndicator.name}
+DESCRIÇÃO: ${customIndicator.description}
+FÓRMULA: ${customIndicator.formula}
+
+${summary}`;
+
+    const response = await callAi({
+      userId: customIndicator.createdByUserId,
+      type: "CHAT",
+      systemPrompt,
+      userPrompt,
+      temperature: 0.2,
+      maxTokens: 500,
+    });
+
+    // Extrair JSON da resposta
+    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return {
+        id: customIndicator.id,
+        name: customIndicator.name,
+        value: "Erro ao interpretar",
+        rawValue: null,
+        description: "A IA não conseguiu calcular este indicador. Tente reformular a descrição.",
+        unit: "TEXT",
+        available: false,
+        unavailableReason: "Resposta da IA não continha JSON válido.",
+      };
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    return {
+      id: customIndicator.id,
+      name: customIndicator.name,
+      value: parsed.available !== false ? String(parsed.value) : "Dado indisponível",
+      rawValue: parsed.rawValue ?? null,
+      description: parsed.description || customIndicator.description,
+      unit: parsed.unit || "TEXT",
+      available: parsed.available !== false,
+      unavailableReason: parsed.available === false ? parsed.unavailableReason : undefined,
+    };
+  } catch (error) {
+    console.error(`Erro ao calcular indicador custom ${customIndicator.id}:`, error);
+    return {
+      id: customIndicator.id,
+      name: customIndicator.name,
+      value: "Erro ao calcular",
+      rawValue: null,
+      description: "Ocorreu um erro ao calcular este indicador personalizado.",
+      unit: "TEXT",
+      available: false,
+      unavailableReason: "Erro interno ao calcular indicador personalizado.",
+    };
+  }
+}
+
+// ============================================
 // FUNÇÃO PRINCIPAL: Calcular indicadores selecionados
+// Suporta tanto indicadores padrão quanto customizados.
 // ============================================
 
 export async function calculateIndicators(
@@ -861,35 +1051,56 @@ export async function calculateIndicators(
 ): Promise<CalculatedIndicator[]> {
   const results: CalculatedIndicator[] = [];
 
+  // Pré-carregar indicadores customizados da empresa para evitar N+1 queries
+  const customIndicators = await prisma.customIndicator.findMany({
+    where: { companyId, isActive: true },
+  });
+  const customMap = new Map(customIndicators.map((ci) => [ci.id, ci]));
+
   for (const id of indicatorIds) {
+    // 1. Tentar como indicador padrão
     const indicator = getIndicatorById(id);
-    if (!indicator) {
-      results.push({
-        id,
-        name: id,
-        value: "Indicador não encontrado",
-        rawValue: null,
-        description: "Este indicador não existe no registry.",
-        unit: "TEXT",
-        available: false,
-        unavailableReason: "Indicador não encontrado no registry.",
+    if (indicator) {
+      const calculator = calculators[indicator.calculationKey];
+      if (!calculator) {
+        results.push(unavailable(indicator, "Cálculo não implementado para este indicador."));
+        continue;
+      }
+      try {
+        const calculated = await calculator(companyId, month);
+        results.push(calculated);
+      } catch (error) {
+        console.error(`Erro ao calcular indicador ${id}:`, error);
+        results.push(unavailable(indicator, "Erro ao calcular este indicador. Tente novamente."));
+      }
+      continue;
+    }
+
+    // 2. Tentar como indicador customizado (do banco)
+    const custom = customMap.get(id);
+    if (custom) {
+      const calculated = await calculateCustomIndicator(companyId, month, {
+        id: custom.id,
+        name: custom.name,
+        description: custom.description,
+        formula: custom.formula,
+        createdByUserId: custom.createdByUserId,
       });
-      continue;
-    }
-
-    const calculator = calculators[indicator.calculationKey];
-    if (!calculator) {
-      results.push(unavailable(indicator, "Cálculo não implementado para este indicador."));
-      continue;
-    }
-
-    try {
-      const calculated = await calculator(companyId, month);
       results.push(calculated);
-    } catch (error) {
-      console.error(`Erro ao calcular indicador ${id}:`, error);
-      results.push(unavailable(indicator, "Erro ao calcular este indicador. Tente novamente."));
+      continue;
     }
+
+    // 3. Indicador não encontrado em nenhum lugar
+    results.push({
+      id,
+      name: id,
+      value: "Indicador não encontrado",
+      rawValue: null,
+      description: "Este indicador não existe no sistema.",
+      unit: "TEXT",
+      available: false,
+      unavailableReason: "Indicador não encontrado.",
+    });
   }
 
   return results;
