@@ -5,6 +5,9 @@
  * Cada indicador tem uma função de cálculo que faz queries Prisma e retorna
  * o valor formatado + texto explicativo interpolado.
  * 
+ * REGIME DE CAIXA: Todas as queries usam data efetiva (paymentDate/receiptDate)
+ * para alinhar com o Dashboard (financial.controller.ts).
+ * 
  * Caminho no projeto: server/modules/report/report.service.ts
  */
 
@@ -126,48 +129,93 @@ function textResult(indicator: StandardIndicator, displayValue: string, descript
 }
 
 // ============================================
-// QUERIES BASE (reutilizadas por vários indicadores)
+// REGIME DE CAIXA — DATA EFETIVA
+// Alinhado com financial.controller.ts (Dashboard)
 // ============================================
 
-async function getCompletedTransactions(companyId: string, range: MonthRange) {
-  return prisma.transaction.findMany({
+/**
+ * Retorna a data efetiva de uma transação (regime de caixa).
+ * Para EXPENSE: paymentDate (fallback: transaction.date)
+ * Para INCOME: receiptDate (fallback: transaction.date)
+ */
+function getEffectiveDate(tx: any): Date {
+  if (tx.tipo_transacao === "EXPENSE") {
+    return tx.detail?.paymentDate ? new Date(tx.detail.paymentDate) : new Date(tx.date);
+  } else {
+    return tx.detail?.receiptDate ? new Date(tx.detail.receiptDate) : new Date(tx.date);
+  }
+}
+
+// ============================================
+// QUERIES BASE (reutilizadas por vários indicadores)
+// Todas usam data efetiva para regime de caixa.
+// ============================================
+
+/**
+ * Busca todas as transações COMPLETED da empresa e filtra por data efetiva
+ * dentro do range do mês. Usa busca ampla no Prisma (±6 meses) e filtra
+ * em memória pela data efetiva.
+ */
+async function getCompletedTransactionsEffective(companyId: string, range: MonthRange) {
+  const wideStart = new Date(range.start);
+  wideStart.setUTCMonth(wideStart.getUTCMonth() - 6);
+  const wideEnd = new Date(range.end);
+  wideEnd.setUTCMonth(wideEnd.getUTCMonth() + 3);
+
+  const allTx = await prisma.transaction.findMany({
     where: {
       companyId,
       status: "COMPLETED",
-      date: { gte: range.start, lt: range.end },
+      date: { gte: wideStart, lt: wideEnd },
     },
     include: { category: true, detail: true, counterparty: true },
   });
+
+  return allTx.filter((tx) => {
+    const effectiveDate = getEffectiveDate(tx);
+    return effectiveDate >= range.start && effectiveDate < range.end;
+  });
+}
+
+/**
+ * Busca todas as transações COMPLETED até o final do range (para saldo acumulado).
+ * Filtra por data efetiva < range.end.
+ */
+async function getAllCompletedTransactionsUntil(companyId: string, untilDate: Date) {
+  const allTx = await prisma.transaction.findMany({
+    where: {
+      companyId,
+      status: "COMPLETED",
+    },
+    include: { detail: true },
+  });
+
+  return allTx.filter((tx) => {
+    const effectiveDate = getEffectiveDate(tx);
+    return effectiveDate < untilDate;
+  });
+}
+
+// Alias para compatibilidade
+async function getCompletedTransactions(companyId: string, range: MonthRange) {
+  return getCompletedTransactionsEffective(companyId, range);
 }
 
 async function getRevenueTotal(companyId: string, range: MonthRange): Promise<number> {
-  const result = await prisma.transaction.aggregate({
-    where: {
-      companyId,
-      tipo_transacao: "INCOME",
-      status: "COMPLETED",
-      date: { gte: range.start, lt: range.end },
-    },
-    _sum: { amount: true },
-  });
-  return n(result._sum.amount);
+  const transactions = await getCompletedTransactionsEffective(companyId, range);
+  return transactions
+    .filter((tx) => tx.tipo_transacao === "INCOME")
+    .reduce((sum, tx) => sum + n(tx.amount), 0);
 }
 
 async function getExpenseTotal(companyId: string, range: MonthRange): Promise<number> {
-  const result = await prisma.transaction.aggregate({
-    where: {
-      companyId,
-      tipo_transacao: "EXPENSE",
-      status: "COMPLETED",
-      date: { gte: range.start, lt: range.end },
-    },
-    _sum: { amount: true },
-  });
-  return n(result._sum.amount);
+  const transactions = await getCompletedTransactionsEffective(companyId, range);
+  return transactions
+    .filter((tx) => tx.tipo_transacao === "EXPENSE")
+    .reduce((sum, tx) => sum + n(tx.amount), 0);
 }
 
 async function getDirectCosts(companyId: string, range: MonthRange): Promise<number> {
-  // Buscar o perfil DRE da empresa para saber quais categorias são custo direto
   const company = await prisma.company.findUnique({
     where: { id: companyId },
     select: { sector: true },
@@ -177,23 +225,15 @@ async function getDirectCosts(companyId: string, range: MonthRange): Promise<num
   const dreProfile = getDREProfile(company.sector);
   if (!dreProfile) return 0;
 
-  const transactions = await prisma.transaction.findMany({
-    where: {
-      companyId,
-      tipo_transacao: "EXPENSE",
-      status: "COMPLETED",
-      date: { gte: range.start, lt: range.end },
-    },
-    include: { category: true },
-  });
+  const transactions = await getCompletedTransactionsEffective(companyId, range);
 
   return transactions
-    .filter((tx) => tx.category && isDirectCostFn(tx.category.code, dreProfile))
+    .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.category && isDirectCostFn(tx.category.code, dreProfile))
     .reduce((sum, tx) => sum + n(tx.amount), 0);
 }
 
 /**
- * Busca o total de impostos/tributos (8.x) do mês, conforme perfil DRE.
+ * Busca o total de impostos/tributos do mês, conforme perfil DRE.
  * O Dashboard deduz impostos da receita bruta ANTES de calcular o Lucro Bruto:
  *   Lucro Bruto = Receita - Custos Diretos - Impostos
  */
@@ -207,18 +247,10 @@ async function getTaxes(companyId: string, range: MonthRange): Promise<number> {
   const dreProfile = getDREProfile(company.sector);
   if (!dreProfile) return 0;
 
-  const transactions = await prisma.transaction.findMany({
-    where: {
-      companyId,
-      tipo_transacao: "EXPENSE",
-      status: "COMPLETED",
-      date: { gte: range.start, lt: range.end },
-    },
-    include: { category: true },
-  });
+  const transactions = await getCompletedTransactionsEffective(companyId, range);
 
   return transactions
-    .filter((tx) => tx.category && isTaxFn(tx.category.code, dreProfile))
+    .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.category && isTaxFn(tx.category.code, dreProfile))
     .reduce((sum, tx) => sum + n(tx.amount), 0);
 }
 
@@ -280,32 +312,25 @@ const calculators: Record<string, Calculator> = {
   async ebitda(companyId, month) {
     const ind = getIndicatorById("ind_ebitda")!;
     const range = parseMonth(month);
-    const receita = await getRevenueTotal(companyId, range);
-    const despesa = await getExpenseTotal(companyId, range);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const receita = transactions
+      .filter((tx) => tx.tipo_transacao === "INCOME")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
+    const despesa = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     const lucroLiquido = receita - despesa;
 
-    // Somar juros pagos
-    const jurosResult = await prisma.transactionDetail.aggregate({
-      where: {
-        transaction: { companyId, status: "COMPLETED", date: { gte: range.start, lt: range.end } },
-        interest: { not: null },
-      },
-      _sum: { interest: true },
-    });
-    const juros = n(jurosResult._sum.interest);
+    // Somar juros pagos (do detail das transações do mês efetivo)
+    const juros = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.detail?.interest)
+      .reduce((sum, tx) => sum + n(tx.detail!.interest), 0);
 
     // Somar impostos (categorias 8.*)
-    const impostos = await prisma.transaction.aggregate({
-      where: {
-        companyId,
-        tipo_transacao: "EXPENSE",
-        status: "COMPLETED",
-        date: { gte: range.start, lt: range.end },
-        category: { code: { startsWith: "8." } },
-      },
-      _sum: { amount: true },
-    });
-    const totalImpostos = n(impostos._sum.amount);
+    const totalImpostos = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.category?.code?.startsWith("8."))
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
 
     const ebitda = lucroLiquido + juros + totalImpostos;
     return result(ind, ebitda, `O EBITDA aproximado foi de ${formatBRL(ebitda)} — lucro líquido (${formatBRL(lucroLiquido)}) + juros (${formatBRL(juros)}) + impostos (${formatBRL(totalImpostos)}).`);
@@ -314,25 +339,25 @@ const calculators: Record<string, Calculator> = {
   async ponto_equilibrio(companyId, month) {
     const ind = getIndicatorById("ind_ponto_equilibrio")!;
     const range = parseMonth(month);
-    const receita = await getRevenueTotal(companyId, range);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
 
-    const fixos = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", tipo_custo: "FIXO", date: { gte: range.start, lt: range.end } },
-      _sum: { amount: true },
-    });
-    const variaveis = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", tipo_custo: "VARIAVEL", date: { gte: range.start, lt: range.end } },
-      _sum: { amount: true },
-    });
+    const receita = transactions
+      .filter((tx) => tx.tipo_transacao === "INCOME")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
 
-    const custosFixos = n(fixos._sum.amount);
-    const custosVariaveis = n(variaveis._sum.amount);
+    const custosFixos = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && (tx as any).tipo_custo === "FIXO")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
+
+    const custosVariaveis = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && (tx as any).tipo_custo === "VARIAVEL")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
 
     if (receita === 0 || receita === custosVariaveis) {
       return unavailable(ind, "Dados insuficientes para calcular o ponto de equilíbrio (receita zero ou igual aos custos variáveis).");
     }
 
-    const pe = n(custosFixos) / (1 - n(custosVariaveis) / receita);
+    const pe = custosFixos / (1 - custosVariaveis / receita);
     return result(ind, pe, `O ponto de equilíbrio é de ${formatBRL(pe)} — a empresa precisa faturar pelo menos esse valor para cobrir todos os custos.`);
   },
 
@@ -380,14 +405,16 @@ const calculators: Record<string, Calculator> = {
   async pct_fixos(companyId, month) {
     const ind = getIndicatorById("ind_pct_fixos")!;
     const range = parseMonth(month);
-    const totalDespesas = await getExpenseTotal(companyId, range);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const totalDespesas = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     if (totalDespesas === 0) return unavailable(ind, "Sem despesas no mês.");
 
-    const fixos = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", tipo_custo: "FIXO", date: { gte: range.start, lt: range.end } },
-      _sum: { amount: true },
-    });
-    const fixVal = n(fixos._sum.amount);
+    const fixVal = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && (tx as any).tipo_custo === "FIXO")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     const pct = (fixVal / totalDespesas) * 100;
     return result(ind, pct, `${formatPercent(pct)} dos gastos do mês são custos fixos (${formatBRL(fixVal)} de ${formatBRL(totalDespesas)}).`);
   },
@@ -395,14 +422,16 @@ const calculators: Record<string, Calculator> = {
   async pct_variaveis(companyId, month) {
     const ind = getIndicatorById("ind_pct_variaveis")!;
     const range = parseMonth(month);
-    const totalDespesas = await getExpenseTotal(companyId, range);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const totalDespesas = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     if (totalDespesas === 0) return unavailable(ind, "Sem despesas no mês.");
 
-    const variaveis = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", tipo_custo: "VARIAVEL", date: { gte: range.start, lt: range.end } },
-      _sum: { amount: true },
-    });
-    const varVal = n(variaveis._sum.amount);
+    const varVal = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && (tx as any).tipo_custo === "VARIAVEL")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     const pct = (varVal / totalDespesas) * 100;
     return result(ind, pct, `${formatPercent(pct)} dos gastos do mês são custos variáveis (${formatBRL(varVal)} de ${formatBRL(totalDespesas)}).`);
   },
@@ -410,12 +439,14 @@ const calculators: Record<string, Calculator> = {
   async maior_despesa(companyId, month) {
     const ind = getIndicatorById("ind_maior_despesa")!;
     const range = parseMonth(month);
-    const tx = await prisma.transaction.findFirst({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end } },
-      orderBy: { amount: "desc" },
-      include: { category: true },
-    });
-    if (!tx) return unavailable(ind, "Sem despesas no mês.");
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const despesas = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE")
+      .sort((a, b) => n(b.amount) - n(a.amount));
+
+    if (despesas.length === 0) return unavailable(ind, "Sem despesas no mês.");
+    const tx = despesas[0];
     const txAmount = n(tx.amount);
     return textResult(ind, `${formatBRL(txAmount)} — ${tx.description}`, `A maior despesa do mês foi "${tx.description}" no valor de ${formatBRL(txAmount)}${tx.category ? ` (categoria: ${tx.category.name})` : ""}.`);
   },
@@ -423,23 +454,25 @@ const calculators: Record<string, Calculator> = {
   async top5_categorias(companyId, month) {
     const ind = getIndicatorById("ind_top5_categorias")!;
     const range = parseMonth(month);
-    const grouped = await prisma.transaction.groupBy({
-      by: ["categoryId"],
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, categoryId: { not: null } },
-      _sum: { amount: true },
-      orderBy: { _sum: { amount: "desc" } },
-      take: 5,
-    });
-    if (grouped.length === 0) return unavailable(ind, "Sem despesas categorizadas no mês.");
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
 
-    const categoryIds = grouped.map((g) => g.categoryId).filter(Boolean) as string[];
-    const categories = await prisma.category.findMany({ where: { id: { in: categoryIds } } });
-    const catMap = new Map(categories.map((c) => [c.id, c.name]));
+    const despesas = transactions.filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.category);
+    if (despesas.length === 0) return unavailable(ind, "Sem despesas categorizadas no mês.");
 
-    const lines = grouped.map((g, i) => {
-      const name = catMap.get(g.categoryId!) || "Sem categoria";
-      return `${i + 1}. ${name}: ${formatBRL(n(g._sum.amount))}`;
+    // Agrupar por categoria
+    const catMap = new Map<string, { name: string; total: number }>();
+    despesas.forEach((tx) => {
+      const catId = tx.category!.id;
+      const existing = catMap.get(catId);
+      if (existing) {
+        existing.total += n(tx.amount);
+      } else {
+        catMap.set(catId, { name: tx.category!.name, total: n(tx.amount) });
+      }
     });
+
+    const sorted = Array.from(catMap.values()).sort((a, b) => b.total - a.total).slice(0, 5);
+    const lines = sorted.map((c, i) => `${i + 1}. ${c.name}: ${formatBRL(c.total)}`);
 
     return textResult(ind, lines.join("\n"), `As 5 categorias que mais consumiram recursos:\n${lines.join("\n")}`);
   },
@@ -447,11 +480,11 @@ const calculators: Record<string, Calculator> = {
   async impostos_totais(companyId, month) {
     const ind = getIndicatorById("ind_impostos_totais")!;
     const range = parseMonth(month);
-    const result_ = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, category: { code: { startsWith: "8." } } },
-      _sum: { amount: true },
-    });
-    const total = n(result_._sum.amount);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const total = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.category?.code?.startsWith("8."))
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     return result(ind, total, `O total pago em impostos no mês foi de ${formatBRL(total)}.`);
   },
 
@@ -461,11 +494,10 @@ const calculators: Record<string, Calculator> = {
     const receita = await getRevenueTotal(companyId, range);
     if (receita === 0) return unavailable(ind, "Sem receita no mês.");
 
-    const impostos = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, category: { code: { startsWith: "8." } } },
-      _sum: { amount: true },
-    });
-    const impVal = n(impostos._sum.amount);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+    const impVal = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.category?.code?.startsWith("8."))
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     const pct = (impVal / receita) * 100;
     return result(ind, pct, `${formatPercent(pct)} da receita foi consumido por impostos (${formatBRL(impVal)} de ${formatBRL(receita)}).`);
   },
@@ -473,11 +505,11 @@ const calculators: Record<string, Calculator> = {
   async custo_pessoal(companyId, month) {
     const ind = getIndicatorById("ind_custo_pessoal")!;
     const range = parseMonth(month);
-    const result_ = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, category: { code: { startsWith: "4." } } },
-      _sum: { amount: true },
-    });
-    const total = n(result_._sum.amount);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const total = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.category?.code?.startsWith("4."))
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     return result(ind, total, `O total gasto com pessoal (salários, encargos e benefícios) foi de ${formatBRL(total)}.`);
   },
 
@@ -487,11 +519,10 @@ const calculators: Record<string, Calculator> = {
     const receita = await getRevenueTotal(companyId, range);
     if (receita === 0) return unavailable(ind, "Sem receita no mês.");
 
-    const pessoal = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, category: { code: { startsWith: "4." } } },
-      _sum: { amount: true },
-    });
-    const pesVal = n(pessoal._sum.amount);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+    const pesVal = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.category?.code?.startsWith("4."))
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     const pct = (pesVal / receita) * 100;
     return result(ind, pct, `${formatPercent(pct)} da receita é comprometido com pessoal (${formatBRL(pesVal)} de ${formatBRL(receita)}).`);
   },
@@ -509,15 +540,14 @@ const calculators: Record<string, Calculator> = {
     const ind = getIndicatorById("ind_saldo_acumulado")!;
     const range = parseMonth(month);
 
-    const receitas = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "INCOME", status: "COMPLETED", date: { lt: range.end } },
-      _sum: { amount: true },
-    });
-    const despesas = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { lt: range.end } },
-      _sum: { amount: true },
-    });
-    const saldo = n(receitas._sum.amount) - n(despesas._sum.amount);
+    const allTx = await getAllCompletedTransactionsUntil(companyId, range.end);
+    const receitas = allTx
+      .filter((tx) => tx.tipo_transacao === "INCOME")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
+    const despesas = allTx
+      .filter((tx) => tx.tipo_transacao === "EXPENSE")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
+    const saldo = receitas - despesas;
     return result(ind, saldo, `O saldo acumulado até o final do mês é de ${formatBRL(saldo)}.`);
   },
 
@@ -535,25 +565,25 @@ const calculators: Record<string, Calculator> = {
     const ind = getIndicatorById("ind_cobertura_caixa")!;
     const range = parseMonth(month);
 
-    // Saldo acumulado
-    const receitasAcum = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "INCOME", status: "COMPLETED", date: { lt: range.end } },
-      _sum: { amount: true },
-    });
-    const despesasAcum = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { lt: range.end } },
-      _sum: { amount: true },
-    });
-    const saldo = n(receitasAcum._sum.amount) - n(despesasAcum._sum.amount);
+    // Saldo acumulado usando data efetiva
+    const allTx = await getAllCompletedTransactionsUntil(companyId, range.end);
+    const receitas = allTx
+      .filter((tx) => tx.tipo_transacao === "INCOME")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
+    const despesasAcum = allTx
+      .filter((tx) => tx.tipo_transacao === "EXPENSE")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
+    const saldo = receitas - despesasAcum;
 
-    // Média de despesas dos últimos 3 meses
+    // Média de despesas dos últimos 3 meses usando data efetiva
     const threeMonthsAgo = new Date(range.start);
     threeMonthsAgo.setUTCMonth(threeMonthsAgo.getUTCMonth() - 3);
-    const despesas3m = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: threeMonthsAgo, lt: range.end } },
-      _sum: { amount: true },
-    });
-    const mediaDespesas = n(despesas3m._sum.amount) / 3;
+    const range3m: MonthRange = { start: threeMonthsAgo, end: range.end };
+    const tx3m = await getCompletedTransactionsEffective(companyId, range3m);
+    const despesas3m = tx3m
+      .filter((tx) => tx.tipo_transacao === "EXPENSE")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
+    const mediaDespesas = despesas3m / 3;
 
     if (mediaDespesas === 0) return unavailable(ind, "Sem despesas nos últimos 3 meses para calcular a cobertura.");
     if (saldo <= 0) return result(ind, 0, "O saldo acumulado é negativo — a empresa não tem cobertura de caixa.");
@@ -655,52 +685,74 @@ const calculators: Record<string, Calculator> = {
   async maior_fornecedor(companyId, month) {
     const ind = getIndicatorById("ind_maior_fornecedor")!;
     const range = parseMonth(month);
-    const grouped = await prisma.transaction.groupBy({
-      by: ["counterpartyId"],
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, counterpartyId: { not: null } },
-      _sum: { amount: true },
-      orderBy: { _sum: { amount: "desc" } },
-      take: 1,
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const despesas = transactions.filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.counterparty);
+    if (despesas.length === 0) return unavailable(ind, "Sem despesas com fornecedores identificados no mês.");
+
+    // Agrupar por counterparty
+    const cpMap = new Map<string, { name: string; total: number }>();
+    despesas.forEach((tx) => {
+      const cpId = tx.counterparty!.id;
+      const existing = cpMap.get(cpId);
+      if (existing) {
+        existing.total += n(tx.amount);
+      } else {
+        cpMap.set(cpId, { name: tx.counterparty!.name, total: n(tx.amount) });
+      }
     });
-    if (grouped.length === 0) return unavailable(ind, "Sem despesas com fornecedores identificados no mês.");
-    const cp = await prisma.counterparty.findUnique({ where: { id: grouped[0].counterpartyId! } });
-    const nome = cp?.name || "Desconhecido";
-    const valor = n(grouped[0]._sum.amount);
-    return textResult(ind, `${nome}: ${formatBRL(valor)}`, `O fornecedor que mais recebeu pagamentos no mês foi ${nome}, com ${formatBRL(valor)}.`);
+
+    const sorted = Array.from(cpMap.values()).sort((a, b) => b.total - a.total);
+    const maior = sorted[0];
+    return textResult(ind, `${maior.name}: ${formatBRL(maior.total)}`, `O fornecedor que mais recebeu pagamentos no mês foi ${maior.name}, com ${formatBRL(maior.total)}.`);
   },
 
   async maior_cliente(companyId, month) {
     const ind = getIndicatorById("ind_maior_cliente")!;
     const range = parseMonth(month);
-    const grouped = await prisma.transaction.groupBy({
-      by: ["counterpartyId"],
-      where: { companyId, tipo_transacao: "INCOME", status: "COMPLETED", date: { gte: range.start, lt: range.end }, counterpartyId: { not: null } },
-      _sum: { amount: true },
-      orderBy: { _sum: { amount: "desc" } },
-      take: 1,
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const receitas = transactions.filter((tx) => tx.tipo_transacao === "INCOME" && tx.counterparty);
+    if (receitas.length === 0) return unavailable(ind, "Sem receitas com clientes identificados no mês.");
+
+    // Agrupar por counterparty
+    const cpMap = new Map<string, { name: string; total: number }>();
+    receitas.forEach((tx) => {
+      const cpId = tx.counterparty!.id;
+      const existing = cpMap.get(cpId);
+      if (existing) {
+        existing.total += n(tx.amount);
+      } else {
+        cpMap.set(cpId, { name: tx.counterparty!.name, total: n(tx.amount) });
+      }
     });
-    if (grouped.length === 0) return unavailable(ind, "Sem receitas com clientes identificados no mês.");
-    const cp = await prisma.counterparty.findUnique({ where: { id: grouped[0].counterpartyId! } });
-    const nome = cp?.name || "Desconhecido";
-    const valor = n(grouped[0]._sum.amount);
-    return textResult(ind, `${nome}: ${formatBRL(valor)}`, `O cliente que mais gerou receita no mês foi ${nome}, com ${formatBRL(valor)}.`);
+
+    const sorted = Array.from(cpMap.values()).sort((a, b) => b.total - a.total);
+    const maior = sorted[0];
+    return textResult(ind, `${maior.name}: ${formatBRL(maior.total)}`, `O cliente que mais gerou receita no mês foi ${maior.name}, com ${formatBRL(maior.total)}.`);
   },
 
   async concentracao_clientes(companyId, month) {
     const ind = getIndicatorById("ind_concentracao_clientes")!;
     const range = parseMonth(month);
-    const receitaTotal = await getRevenueTotal(companyId, range);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const receitaTotal = transactions
+      .filter((tx) => tx.tipo_transacao === "INCOME")
+      .reduce((sum, tx) => sum + n(tx.amount), 0);
     if (receitaTotal === 0) return unavailable(ind, "Sem receita no mês.");
 
-    const grouped = await prisma.transaction.groupBy({
-      by: ["counterpartyId"],
-      where: { companyId, tipo_transacao: "INCOME", status: "COMPLETED", date: { gte: range.start, lt: range.end }, counterpartyId: { not: null } },
-      _sum: { amount: true },
-      orderBy: { _sum: { amount: "desc" } },
-      take: 1,
+    const receitas = transactions.filter((tx) => tx.tipo_transacao === "INCOME" && tx.counterparty);
+    if (receitas.length === 0) return unavailable(ind, "Sem receitas com clientes identificados.");
+
+    // Agrupar por counterparty
+    const cpMap = new Map<string, number>();
+    receitas.forEach((tx) => {
+      const cpId = tx.counterparty!.id;
+      cpMap.set(cpId, (cpMap.get(cpId) || 0) + n(tx.amount));
     });
-    if (grouped.length === 0) return unavailable(ind, "Sem receitas com clientes identificados.");
-    const maiorCliente = n(grouped[0]._sum.amount);
+
+    const maiorCliente = Math.max(...Array.from(cpMap.values()));
     const pct = (maiorCliente / receitaTotal) * 100;
     const alerta = pct > 30 ? " ⚠️ Acima de 30% indica risco de concentração." : "";
     return result(ind, pct, `O maior cliente representa ${formatPercent(pct)} da receita total.${alerta}`);
@@ -727,77 +779,65 @@ const calculators: Record<string, Calculator> = {
   async ticket_medio_receita(companyId, month) {
     const ind = getIndicatorById("ind_ticket_medio_receita")!;
     const range = parseMonth(month);
-    const result_ = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "INCOME", status: "COMPLETED", date: { gte: range.start, lt: range.end } },
-      _avg: { amount: true },
-      _count: true,
-    });
-    if (result_._count === 0) return unavailable(ind, "Sem receitas no mês.");
-    const avg = n(result_._avg.amount);
-    return result(ind, avg, `O valor médio de cada receita no mês foi de ${formatBRL(avg)} (${result_._count} transações).`);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const receitas = transactions.filter((tx) => tx.tipo_transacao === "INCOME");
+    if (receitas.length === 0) return unavailable(ind, "Sem receitas no mês.");
+    const total = receitas.reduce((sum, tx) => sum + n(tx.amount), 0);
+    const avg = total / receitas.length;
+    return result(ind, avg, `O valor médio de cada receita no mês foi de ${formatBRL(avg)} (${receitas.length} transações).`);
   },
 
   async ticket_medio_despesa(companyId, month) {
     const ind = getIndicatorById("ind_ticket_medio_despesa")!;
     const range = parseMonth(month);
-    const result_ = await prisma.transaction.aggregate({
-      where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end } },
-      _avg: { amount: true },
-      _count: true,
-    });
-    if (result_._count === 0) return unavailable(ind, "Sem despesas no mês.");
-    const avg = n(result_._avg.amount);
-    return result(ind, avg, `O valor médio de cada despesa no mês foi de ${formatBRL(avg)} (${result_._count} transações).`);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const despesas = transactions.filter((tx) => tx.tipo_transacao === "EXPENSE");
+    if (despesas.length === 0) return unavailable(ind, "Sem despesas no mês.");
+    const total = despesas.reduce((sum, tx) => sum + n(tx.amount), 0);
+    const avg = total / despesas.length;
+    return result(ind, avg, `O valor médio de cada despesa no mês foi de ${formatBRL(avg)} (${despesas.length} transações).`);
   },
 
   async qtd_transacoes(companyId, month) {
     const ind = getIndicatorById("ind_qtd_transacoes")!;
     const range = parseMonth(month);
-    const count = await prisma.transaction.count({
-      where: { companyId, status: "COMPLETED", date: { gte: range.start, lt: range.end } },
-    });
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+    const count = transactions.length;
     return result(ind, count, `Foram registradas ${count} transações concluídas no mês.`);
   },
 
   async juros_pagos(companyId, month) {
     const ind = getIndicatorById("ind_juros_pagos")!;
     const range = parseMonth(month);
-    const result_ = await prisma.transactionDetail.aggregate({
-      where: {
-        transaction: { companyId, status: "COMPLETED", date: { gte: range.start, lt: range.end } },
-        interest: { not: null },
-      },
-      _sum: { interest: true },
-    });
-    const total = n(result_._sum.interest);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const total = transactions
+      .filter((tx) => tx.detail?.interest)
+      .reduce((sum, tx) => sum + n(tx.detail!.interest), 0);
     return result(ind, total, `O total de juros pagos no mês foi de ${formatBRL(total)}.`);
   },
 
   async descontos_concedidos(companyId, month) {
     const ind = getIndicatorById("ind_descontos_concedidos")!;
     const range = parseMonth(month);
-    const result_ = await prisma.transactionDetail.aggregate({
-      where: {
-        transaction: { companyId, tipo_transacao: "INCOME", status: "COMPLETED", date: { gte: range.start, lt: range.end } },
-        discount: { not: null },
-      },
-      _sum: { discount: true },
-    });
-    const total = n(result_._sum.discount);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const total = transactions
+      .filter((tx) => tx.tipo_transacao === "INCOME" && tx.detail?.discount)
+      .reduce((sum, tx) => sum + n(tx.detail!.discount), 0);
     return result(ind, total, `O total de descontos concedidos a clientes no mês foi de ${formatBRL(total)}.`);
   },
 
   async descontos_obtidos(companyId, month) {
     const ind = getIndicatorById("ind_descontos_obtidos")!;
     const range = parseMonth(month);
-    const result_ = await prisma.transactionDetail.aggregate({
-      where: {
-        transaction: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end } },
-        discount: { not: null },
-      },
-      _sum: { discount: true },
-    });
-    const total = n(result_._sum.discount);
+    const transactions = await getCompletedTransactionsEffective(companyId, range);
+
+    const total = transactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.detail?.discount)
+      .reduce((sum, tx) => sum + n(tx.detail!.discount), 0);
     return result(ind, total, `O total de descontos obtidos de fornecedores no mês foi de ${formatBRL(total)}.`);
   },
 
