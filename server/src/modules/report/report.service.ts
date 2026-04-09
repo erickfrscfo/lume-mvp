@@ -9,7 +9,7 @@
  */
 
 import { prisma } from "../../shared/database.js";
-import { getDREProfile } from "../../shared/dre-profiles.js";
+import { getDREProfile, isDirectCost as isDirectCostFn } from "../../shared/dre-profiles.js";
 import {
   STANDARD_INDICATORS,
   getIndicatorById,
@@ -188,7 +188,7 @@ async function getDirectCosts(companyId: string, range: MonthRange): Promise<num
   });
 
   return transactions
-    .filter((tx) => tx.category && (dreProfile as any).isDirectCost?.(tx.category.code))
+    .filter((tx) => tx.category && isDirectCostFn(tx.category.code, dreProfile))
     .reduce((sum, tx) => sum + n(tx.amount), 0);
 }
 
