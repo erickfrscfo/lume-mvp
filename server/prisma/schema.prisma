@@ -38,6 +38,8 @@ model Company {
   documents          Document[]
   aiInsights         AiInsight[]
   companyCategories  CompanyCategory[]
+  reportTemplate     ReportTemplate?
+  customIndicators   CustomIndicator[]
 
   @@index([code])
   @@index([cnpj])
@@ -60,6 +62,41 @@ model CompanyCategory {
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@unique([companyId, code])
+  @@index([companyId])
+  @@index([companyId, isActive])
+}
+
+// ============================================
+// RELATÓRIO
+// ============================================
+model ReportTemplate {
+  id             String   @id @default(cuid())
+  companyId      String   @unique
+  name           String   @default("Relatório Financeiro")
+  indicators     Json     // Array: [{ id, type, order }]
+  referenceMonth String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId])
+}
+
+model CustomIndicator {
+  id              String   @id @default(cuid())
+  companyId       String
+  name            String
+  description     String
+  formula         String
+  queryTemplate   String
+  createdByUserId String
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
   @@index([companyId])
   @@index([companyId, isActive])
 }

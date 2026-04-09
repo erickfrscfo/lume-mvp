@@ -20,6 +20,7 @@ import reconciliationsController from "./modules/reconciliations/reconciliations
 import documentsController from "./modules/documents/documents.controller.js";
 import insightsController from "./modules/insights/insights.controller.js";
 import { ocrController } from "./modules/ocr/ocr.controller.js";
+import reportController from "./modules/report/report.controller.js";
 
 const app = express();
 
@@ -57,6 +58,7 @@ app.use("/api/reconciliations", reconciliationsController);
 app.use("/api/documents", documentsController);
 app.use("/api/insights", insightsController);
 app.use("/api/ocr", ocrController);
+app.use("/api/report", reportController);
 
 // Health check
 app.get("/api/health", (_req, res) => {
