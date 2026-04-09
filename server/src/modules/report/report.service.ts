@@ -1058,13 +1058,19 @@ async function calculateCustomIndicator(
     const monthLabel = `${monthNames[parseInt(m) - 1]} de ${year}`;
 
     // Usar chatWithTools para que a IA tenha acesso às tools (buscar_transacoes, obter_contas_pendentes, etc.)
-    const userMessage = `Preciso que você calcule o seguinte indicador personalizado para ${monthLabel}:
+    const userMessage = `Preciso que você calcule o seguinte indicador personalizado.
+O relatório é referente a ${monthLabel}, mas ATENÇÃO às regras abaixo.
 
 INDICADOR: ${customIndicator.name}
 DESCRIÇÃO: ${customIndicator.description}
 FÓRMULA: ${customIndicator.formula}
 
-Use as ferramentas disponíveis para buscar os dados reais necessários. NÃO invente dados.
+REGRAS IMPORTANTES:
+- Use as ferramentas disponíveis para buscar os dados reais necessários. NÃO invente dados.
+- Para indicadores de ATRASO, PENDÊNCIA, INADIMPLÊNCIA ou similares: considere TODOS os registros pendentes/atrasados ACUMULADOS até a data atual, independente do mês de vencimento. Exemplo: "Custos Atrasados" deve somar TODAS as despesas pendentes com vencimento no passado (janeiro, fevereiro, março, etc.), não apenas as do mês do relatório.
+- Para indicadores de FLUXO (receita, despesa, margem, etc.): use apenas os dados do mês de referência (${monthLabel}).
+- O resumo financeiro abaixo já contém a seção "Pagamentos ATRASADOS" com o total acumulado — use esses dados.
+
 Após calcular, retorne APENAS um JSON com este formato exato:
 {
   "value": "valor formatado para exibição (ex: R$ 12.345,67 ou 23,5% ou 15 dias)",
