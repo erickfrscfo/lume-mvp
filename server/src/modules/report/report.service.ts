@@ -55,6 +55,13 @@ function getPreviousMonth(month: string): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+/** Converte Prisma Decimal | number | null para number nativo */
+function n(val: any): number {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number') return val;
+  return typeof val.toNumber === 'function' ? val.toNumber() : Number(val);
+}
+
 function formatBRL(value: number): string {
   return `R$ ${value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -143,7 +150,7 @@ async function getRevenueTotal(companyId: string, range: MonthRange): Promise<nu
     },
     _sum: { amount: true },
   });
-  return result._sum.amount || 0;
+  return n(result._sum.amount);
 }
 
 async function getExpenseTotal(companyId: string, range: MonthRange): Promise<number> {
@@ -156,7 +163,7 @@ async function getExpenseTotal(companyId: string, range: MonthRange): Promise<nu
     },
     _sum: { amount: true },
   });
-  return result._sum.amount || 0;
+  return n(result._sum.amount);
 }
 
 async function getDirectCosts(companyId: string, range: MonthRange): Promise<number> {
@@ -181,8 +188,8 @@ async function getDirectCosts(companyId: string, range: MonthRange): Promise<num
   });
 
   return transactions
-    .filter((tx) => tx.category && dreProfile.isDirectCost(tx.category.code))
-    .reduce((sum, tx) => sum + tx.amount, 0);
+    .filter((tx) => tx.category && (dreProfile as any).isDirectCost?.(tx.category.code))
+    .reduce((sum, tx) => sum + n(tx.amount), 0);
 }
 
 // ============================================
@@ -248,7 +255,7 @@ const calculators: Record<string, Calculator> = {
       },
       _sum: { interest: true },
     });
-    const juros = jurosResult._sum.interest || 0;
+    const juros = n(jurosResult._sum.interest);
 
     // Somar impostos (categorias 8.*)
     const impostos = await prisma.transaction.aggregate({
@@ -261,7 +268,7 @@ const calculators: Record<string, Calculator> = {
       },
       _sum: { amount: true },
     });
-    const totalImpostos = impostos._sum.amount || 0;
+    const totalImpostos = n(impostos._sum.amount);
 
     const ebitda = lucroLiquido + juros + totalImpostos;
     return result(ind, ebitda, `O EBITDA aproximado foi de ${formatBRL(ebitda)} — lucro líquido (${formatBRL(lucroLiquido)}) + juros (${formatBRL(juros)}) + impostos (${formatBRL(totalImpostos)}).`);
@@ -281,14 +288,14 @@ const calculators: Record<string, Calculator> = {
       _sum: { amount: true },
     });
 
-    const custosFixos = fixos._sum.amount || 0;
-    const custosVariaveis = variaveis._sum.amount || 0;
+    const custosFixos = n(fixos._sum.amount);
+    const custosVariaveis = n(variaveis._sum.amount);
 
     if (receita === 0 || receita === custosVariaveis) {
       return unavailable(ind, "Dados insuficientes para calcular o ponto de equilíbrio (receita zero ou igual aos custos variáveis).");
     }
 
-    const pe = custosFixos / (1 - custosVariaveis / receita);
+    const pe = n(custosFixos) / (1 - n(custosVariaveis) / receita);
     return result(ind, pe, `O ponto de equilíbrio é de ${formatBRL(pe)} — a empresa precisa faturar pelo menos esse valor para cobrir todos os custos.`);
   },
 
@@ -343,8 +350,9 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", tipo_custo: "FIXO", date: { gte: range.start, lt: range.end } },
       _sum: { amount: true },
     });
-    const pct = ((fixos._sum.amount || 0) / totalDespesas) * 100;
-    return result(ind, pct, `${formatPercent(pct)} dos gastos do mês são custos fixos (${formatBRL(fixos._sum.amount || 0)} de ${formatBRL(totalDespesas)}).`);
+    const fixVal = n(fixos._sum.amount);
+    const pct = (fixVal / totalDespesas) * 100;
+    return result(ind, pct, `${formatPercent(pct)} dos gastos do mês são custos fixos (${formatBRL(fixVal)} de ${formatBRL(totalDespesas)}).`);
   },
 
   async pct_variaveis(companyId, month) {
@@ -357,8 +365,9 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", tipo_custo: "VARIAVEL", date: { gte: range.start, lt: range.end } },
       _sum: { amount: true },
     });
-    const pct = ((variaveis._sum.amount || 0) / totalDespesas) * 100;
-    return result(ind, pct, `${formatPercent(pct)} dos gastos do mês são custos variáveis (${formatBRL(variaveis._sum.amount || 0)} de ${formatBRL(totalDespesas)}).`);
+    const varVal = n(variaveis._sum.amount);
+    const pct = (varVal / totalDespesas) * 100;
+    return result(ind, pct, `${formatPercent(pct)} dos gastos do mês são custos variáveis (${formatBRL(varVal)} de ${formatBRL(totalDespesas)}).`);
   },
 
   async maior_despesa(companyId, month) {
@@ -370,7 +379,8 @@ const calculators: Record<string, Calculator> = {
       include: { category: true },
     });
     if (!tx) return unavailable(ind, "Sem despesas no mês.");
-    return textResult(ind, `${formatBRL(tx.amount)} — ${tx.description}`, `A maior despesa do mês foi "${tx.description}" no valor de ${formatBRL(tx.amount)}${tx.category ? ` (categoria: ${tx.category.name})` : ""}.`);
+    const txAmount = n(tx.amount);
+    return textResult(ind, `${formatBRL(txAmount)} — ${tx.description}`, `A maior despesa do mês foi "${tx.description}" no valor de ${formatBRL(txAmount)}${tx.category ? ` (categoria: ${tx.category.name})` : ""}.`);
   },
 
   async top5_categorias(companyId, month) {
@@ -391,7 +401,7 @@ const calculators: Record<string, Calculator> = {
 
     const lines = grouped.map((g, i) => {
       const name = catMap.get(g.categoryId!) || "Sem categoria";
-      return `${i + 1}. ${name}: ${formatBRL(g._sum.amount || 0)}`;
+      return `${i + 1}. ${name}: ${formatBRL(n(g._sum.amount))}`;
     });
 
     return textResult(ind, lines.join("\n"), `As 5 categorias que mais consumiram recursos:\n${lines.join("\n")}`);
@@ -404,7 +414,7 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, category: { code: { startsWith: "8." } } },
       _sum: { amount: true },
     });
-    const total = result_._sum.amount || 0;
+    const total = n(result_._sum.amount);
     return result(ind, total, `O total pago em impostos no mês foi de ${formatBRL(total)}.`);
   },
 
@@ -418,8 +428,9 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, category: { code: { startsWith: "8." } } },
       _sum: { amount: true },
     });
-    const pct = ((impostos._sum.amount || 0) / receita) * 100;
-    return result(ind, pct, `${formatPercent(pct)} da receita foi consumido por impostos (${formatBRL(impostos._sum.amount || 0)} de ${formatBRL(receita)}).`);
+    const impVal = n(impostos._sum.amount);
+    const pct = (impVal / receita) * 100;
+    return result(ind, pct, `${formatPercent(pct)} da receita foi consumido por impostos (${formatBRL(impVal)} de ${formatBRL(receita)}).`);
   },
 
   async custo_pessoal(companyId, month) {
@@ -429,7 +440,7 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, category: { code: { startsWith: "4." } } },
       _sum: { amount: true },
     });
-    const total = result_._sum.amount || 0;
+    const total = n(result_._sum.amount);
     return result(ind, total, `O total gasto com pessoal (salários, encargos e benefícios) foi de ${formatBRL(total)}.`);
   },
 
@@ -443,8 +454,9 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: range.start, lt: range.end }, category: { code: { startsWith: "4." } } },
       _sum: { amount: true },
     });
-    const pct = ((pessoal._sum.amount || 0) / receita) * 100;
-    return result(ind, pct, `${formatPercent(pct)} da receita é comprometido com pessoal (${formatBRL(pessoal._sum.amount || 0)} de ${formatBRL(receita)}).`);
+    const pesVal = n(pessoal._sum.amount);
+    const pct = (pesVal / receita) * 100;
+    return result(ind, pct, `${formatPercent(pct)} da receita é comprometido com pessoal (${formatBRL(pesVal)} de ${formatBRL(receita)}).`);
   },
 
   // ── FLUXO DE CAIXA ──
@@ -468,7 +480,7 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { lt: range.end } },
       _sum: { amount: true },
     });
-    const saldo = (receitas._sum.amount || 0) - (despesas._sum.amount || 0);
+    const saldo = n(receitas._sum.amount) - n(despesas._sum.amount);
     return result(ind, saldo, `O saldo acumulado até o final do mês é de ${formatBRL(saldo)}.`);
   },
 
@@ -495,7 +507,7 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { lt: range.end } },
       _sum: { amount: true },
     });
-    const saldo = (receitasAcum._sum.amount || 0) - (despesasAcum._sum.amount || 0);
+    const saldo = n(receitasAcum._sum.amount) - n(despesasAcum._sum.amount);
 
     // Média de despesas dos últimos 3 meses
     const threeMonthsAgo = new Date(range.start);
@@ -504,7 +516,7 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "COMPLETED", date: { gte: threeMonthsAgo, lt: range.end } },
       _sum: { amount: true },
     });
-    const mediaDespesas = (despesas3m._sum.amount || 0) / 3;
+    const mediaDespesas = n(despesas3m._sum.amount) / 3;
 
     if (mediaDespesas === 0) return unavailable(ind, "Sem despesas nos últimos 3 meses para calcular a cobertura.");
     if (saldo <= 0) return result(ind, 0, "O saldo acumulado é negativo — a empresa não tem cobertura de caixa.");
@@ -519,7 +531,7 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "EXPENSE", status: "PENDING" },
       _sum: { amount: true },
     });
-    const total = result_._sum.amount || 0;
+    const total = n(result_._sum.amount);
     return result(ind, total, `O total de despesas pendentes (já lançadas mas não pagas) é de ${formatBRL(total)}.`);
   },
 
@@ -529,7 +541,7 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, tipo_transacao: "INCOME", status: "PENDING" },
       _sum: { amount: true },
     });
-    const total = result_._sum.amount || 0;
+    const total = n(result_._sum.amount);
     return result(ind, total, `O total de receitas pendentes (já lançadas mas não recebidas) é de ${formatBRL(total)}.`);
   },
 
@@ -545,7 +557,7 @@ const calculators: Record<string, Calculator> = {
       },
       _sum: { amount: true },
     });
-    const total = result_._sum.amount || 0;
+    const total = n(result_._sum.amount);
     return result(ind, total, `O total de receitas inadimplentes (vencidas e não recebidas) é de ${formatBRL(total)}.`);
   },
 
@@ -561,7 +573,7 @@ const calculators: Record<string, Calculator> = {
       },
       _sum: { amount: true },
     });
-    const total = result_._sum.amount || 0;
+    const total = n(result_._sum.amount);
     return result(ind, total, `O total de pagamentos em atraso (vencidos e não pagos) é de ${formatBRL(total)}.`);
   },
 
@@ -577,8 +589,8 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, type: "SUPPLIER", isActive: true, avgDaysToPay: { not: null } },
       _avg: { avgDaysToPay: true },
     });
-    const pmr = clientes._avg.avgDaysToReceive || 0;
-    const pmp = fornecedores._avg.avgDaysToPay || 0;
+    const pmr = n(clientes._avg.avgDaysToReceive);
+    const pmp = n(fornecedores._avg.avgDaysToPay);
     const ciclo = pmr - pmp;
     return result(ind, ciclo, `O ciclo de caixa é de ${Math.round(ciclo)} dias (recebe em ${Math.round(pmr)} dias e paga em ${Math.round(pmp)} dias). ${ciclo > 0 ? "A empresa paga antes de receber, o que pressiona o caixa." : "A empresa recebe antes de pagar, o que é positivo para o caixa."}`);
   },
@@ -589,7 +601,7 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, type: "CLIENT", isActive: true, avgDaysToReceive: { not: null } },
       _avg: { avgDaysToReceive: true },
     });
-    const pmr = result_._avg.avgDaysToReceive || 0;
+    const pmr = n(result_._avg.avgDaysToReceive);
     return result(ind, pmr, `Em média, seus clientes levam ${Math.round(pmr)} dias para pagar.`);
   },
 
@@ -599,7 +611,7 @@ const calculators: Record<string, Calculator> = {
       where: { companyId, type: "SUPPLIER", isActive: true, avgDaysToPay: { not: null } },
       _avg: { avgDaysToPay: true },
     });
-    const pmp = result_._avg.avgDaysToPay || 0;
+    const pmp = n(result_._avg.avgDaysToPay);
     return result(ind, pmp, `Em média, você leva ${Math.round(pmp)} dias para pagar seus fornecedores.`);
   },
 
@@ -616,7 +628,7 @@ const calculators: Record<string, Calculator> = {
     if (grouped.length === 0) return unavailable(ind, "Sem despesas com fornecedores identificados no mês.");
     const cp = await prisma.counterparty.findUnique({ where: { id: grouped[0].counterpartyId! } });
     const nome = cp?.name || "Desconhecido";
-    const valor = grouped[0]._sum.amount || 0;
+    const valor = n(grouped[0]._sum.amount);
     return textResult(ind, `${nome}: ${formatBRL(valor)}`, `O fornecedor que mais recebeu pagamentos no mês foi ${nome}, com ${formatBRL(valor)}.`);
   },
 
@@ -633,7 +645,7 @@ const calculators: Record<string, Calculator> = {
     if (grouped.length === 0) return unavailable(ind, "Sem receitas com clientes identificados no mês.");
     const cp = await prisma.counterparty.findUnique({ where: { id: grouped[0].counterpartyId! } });
     const nome = cp?.name || "Desconhecido";
-    const valor = grouped[0]._sum.amount || 0;
+    const valor = n(grouped[0]._sum.amount);
     return textResult(ind, `${nome}: ${formatBRL(valor)}`, `O cliente que mais gerou receita no mês foi ${nome}, com ${formatBRL(valor)}.`);
   },
 
@@ -651,7 +663,7 @@ const calculators: Record<string, Calculator> = {
       take: 1,
     });
     if (grouped.length === 0) return unavailable(ind, "Sem receitas com clientes identificados.");
-    const maiorCliente = grouped[0]._sum.amount || 0;
+    const maiorCliente = n(grouped[0]._sum.amount);
     const pct = (maiorCliente / receitaTotal) * 100;
     const alerta = pct > 30 ? " ⚠️ Acima de 30% indica risco de concentração." : "";
     return result(ind, pct, `O maior cliente representa ${formatPercent(pct)} da receita total.${alerta}`);
@@ -684,7 +696,7 @@ const calculators: Record<string, Calculator> = {
       _count: true,
     });
     if (result_._count === 0) return unavailable(ind, "Sem receitas no mês.");
-    const avg = result_._avg.amount || 0;
+    const avg = n(result_._avg.amount);
     return result(ind, avg, `O valor médio de cada receita no mês foi de ${formatBRL(avg)} (${result_._count} transações).`);
   },
 
@@ -697,7 +709,7 @@ const calculators: Record<string, Calculator> = {
       _count: true,
     });
     if (result_._count === 0) return unavailable(ind, "Sem despesas no mês.");
-    const avg = result_._avg.amount || 0;
+    const avg = n(result_._avg.amount);
     return result(ind, avg, `O valor médio de cada despesa no mês foi de ${formatBRL(avg)} (${result_._count} transações).`);
   },
 
@@ -720,7 +732,7 @@ const calculators: Record<string, Calculator> = {
       },
       _sum: { interest: true },
     });
-    const total = result_._sum.interest || 0;
+    const total = n(result_._sum.interest);
     return result(ind, total, `O total de juros pagos no mês foi de ${formatBRL(total)}.`);
   },
 
@@ -734,7 +746,7 @@ const calculators: Record<string, Calculator> = {
       },
       _sum: { discount: true },
     });
-    const total = result_._sum.discount || 0;
+    const total = n(result_._sum.discount);
     return result(ind, total, `O total de descontos concedidos a clientes no mês foi de ${formatBRL(total)}.`);
   },
 
@@ -748,7 +760,7 @@ const calculators: Record<string, Calculator> = {
       },
       _sum: { discount: true },
     });
-    const total = result_._sum.discount || 0;
+    const total = n(result_._sum.discount);
     return result(ind, total, `O total de descontos obtidos de fornecedores no mês foi de ${formatBRL(total)}.`);
   },
 

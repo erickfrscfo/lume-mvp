@@ -8,7 +8,7 @@
 
 import { Router, Request, Response } from "express";
 import { prisma } from "../../shared/database.js";
-import { requireAuth } from "../../middleware/auth.js";
+import { authMiddleware } from "../auth/auth.middleware.js";
 import {
   STANDARD_INDICATORS,
   INDICATOR_CATEGORIES,
@@ -23,14 +23,13 @@ import { callAi } from "../ai/ai.service.js";
 
 const router = Router();
 
-// Middleware: todas as rotas requerem autenticação
-router.use(requireAuth);
+// Autenticação aplicada por rota via authMiddleware
 
 // ============================================
 // GET /api/report/indicators
 // Lista todos os indicadores disponíveis (padrão + custom), agrupados por categoria
 // ============================================
-router.get("/indicators", async (req: Request, res: Response) => {
+router.get("/indicators", authMiddleware, async (req: Request, res: Response) => {
   try {
     const companyId = (req as any).companyId;
 
@@ -64,7 +63,7 @@ router.get("/indicators", async (req: Request, res: Response) => {
 // GET /api/report/template
 // Retorna o template salvo da empresa (indicadores selecionados + ordem)
 // ============================================
-router.get("/template", async (req: Request, res: Response) => {
+router.get("/template", authMiddleware, async (req: Request, res: Response) => {
   try {
     const companyId = (req as any).companyId;
 
@@ -95,7 +94,7 @@ router.get("/template", async (req: Request, res: Response) => {
 // PUT /api/report/template
 // Salva/atualiza o template (indicadores selecionados + ordem)
 // ============================================
-router.put("/template", async (req: Request, res: Response) => {
+router.put("/template", authMiddleware, async (req: Request, res: Response) => {
   try {
     const companyId = (req as any).companyId;
     const { indicators, name, referenceMonth } = req.body;
@@ -135,7 +134,7 @@ router.put("/template", async (req: Request, res: Response) => {
 // POST /api/report/generate
 // Calcula os valores reais dos indicadores selecionados
 // ============================================
-router.post("/generate", async (req: Request, res: Response) => {
+router.post("/generate", authMiddleware, async (req: Request, res: Response) => {
   try {
     const companyId = (req as any).companyId;
     const { month, indicatorIds } = req.body;
@@ -153,7 +152,7 @@ router.post("/generate", async (req: Request, res: Response) => {
     // Buscar dados da empresa para o cabeçalho
     const company = await prisma.company.findUnique({
       where: { id: companyId },
-      select: { name: true, cnpj: true, logoUrl: true, sector: true },
+      select: { name: true, cnpj: true, sector: true },
     });
 
     // Calcular indicadores
@@ -175,7 +174,6 @@ router.post("/generate", async (req: Request, res: Response) => {
       company: {
         name: company?.name || "Empresa",
         cnpj: company?.cnpj || "",
-        logoUrl: company?.logoUrl || null,
         sector: company?.sector || "",
       },
       referenceMonth,
@@ -193,7 +191,7 @@ router.post("/generate", async (req: Request, res: Response) => {
 // POST /api/report/indicators/custom
 // Cria indicador customizado via IA
 // ============================================
-router.post("/indicators/custom", async (req: Request, res: Response) => {
+router.post("/indicators/custom", authMiddleware, async (req: Request, res: Response) => {
   try {
     const companyId = (req as any).companyId;
     const userId = (req as any).userId;
@@ -304,7 +302,7 @@ Retorne APENAS um JSON com este formato:
 // DELETE /api/report/indicators/custom/:id
 // Remove indicador customizado (soft delete)
 // ============================================
-router.delete("/indicators/custom/:id", async (req: Request, res: Response) => {
+router.delete("/indicators/custom/:id", authMiddleware, async (req: Request, res: Response) => {
   try {
     const companyId = (req as any).companyId;
     const { id } = req.params;
