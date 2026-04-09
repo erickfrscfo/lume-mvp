@@ -276,7 +276,7 @@ const calculators: Record<string, Calculator> = {
     // Lucro Bruto = Receita - Custos Diretos - Impostos
     const lucroBruto = receita - csp - impostos;
     const margem = (lucroBruto / receita) * 100;
-    return result(ind, margem, `A margem bruta foi de ${formatPercent(margem)} — de cada R$ 100 de receita, ${formatBRL(lucroBruto)} ficou após custos diretos (${formatBRL(csp)}) e impostos (${formatBRL(impostos)}).`);
+    return result(ind, margem, `A margem bruta foi de ${formatPercent(margem)} — de cada R$ 100 de receita, R$ ${margem.toFixed(2).replace('.', ',')} sobraram após os custos diretos e impostos.`);
   },
 
   async margem_liquida(companyId, month) {
@@ -286,7 +286,7 @@ const calculators: Record<string, Calculator> = {
     if (receita === 0) return unavailable(ind, "Sem receita no mês para calcular a margem líquida.");
     const despesa = await getExpenseTotal(companyId, range);
     const margem = ((receita - despesa) / receita) * 100;
-    return result(ind, margem, `A margem líquida foi de ${formatPercent(margem)} — de cada R$ 100 de receita, ${formatBRL(receita - despesa)} sobrou no final.`);
+    return result(ind, margem, `A margem líquida foi de ${formatPercent(margem)} — de cada R$ 100 de receita, R$ ${margem.toFixed(2).replace('.', ',')} sobraram após pagar todas as despesas.`);
   },
 
   async lucro_bruto(companyId, month) {
