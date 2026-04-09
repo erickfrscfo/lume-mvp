@@ -22,8 +22,9 @@ router.post("/chat", authMiddleware, async (req: Request, res: Response, next: N
     const userId = (req as any).userId;
     const companyId = (req as any).companyId;
 
-    // Nova arquitetura: contexto base leve + function calling
-    const baseContext = await getBaseContext(companyId);
+    // CORREÇÃO: Usar contexto enriquecido com dados financeiros reais
+    // Garante que a IA sempre tenha dados da empresa mesmo sem usar tools
+    const enrichedContext = await getEnrichedFinancialContext(companyId);
     const company = await prisma.company.findUnique({
       where: { id: companyId },
       select: { sector: true, activity: true },
@@ -33,7 +34,7 @@ router.post("/chat", authMiddleware, async (req: Request, res: Response, next: N
       userId,
       message,
       companyId,
-      baseContext,
+      enrichedContext,
       history,
       company ? { sector: company.sector, activity: company.activity } : undefined
     );
@@ -379,8 +380,8 @@ NOTA: Use as tools disponíveis para buscar dados financeiros detalhados. Não i
 }
 
 // ============================================
-// CONTEXTO FINANCEIRO ENRIQUECIDO (LEGADO)
-// Mantido para uso pelo /explain e /scenario-chat
+// CONTEXTO FINANCEIRO ENRIQUECIDO
+// Usado pelo /chat, /explain e /scenario-chat
 // 
 // CORREÇÃO CRÍTICA (v2):
 // - Agora usa APENAS transações COMPLETED (igual ao Dashboard)
@@ -740,13 +741,13 @@ ${txLines}`;
   });
 
   if (pendingTransactions.length > 0) {
-    const now = new Date();
+    const now2 = new Date();
     const receivables = pendingTransactions.filter((t) => t.tipo_transacao === "INCOME");
     const payables = pendingTransactions.filter((t) => t.tipo_transacao === "EXPENSE");
     // Detectar atraso DINAMICAMENTE: dueDate < hoje (não depende do status OVERDUE)
     const isOverdue = (t: any): boolean => {
       const dueDate = t.detail?.dueDate ? new Date(t.detail.dueDate) : null;
-      return dueDate !== null && dueDate < now;
+      return dueDate !== null && dueDate < now2;
     };
     const overdueReceivables = receivables.filter(isOverdue);
     const overduePayables = payables.filter(isOverdue);
