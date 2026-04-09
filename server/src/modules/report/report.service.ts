@@ -9,7 +9,7 @@
  */
 
 import { prisma } from "../../shared/database.js";
-import { getDREProfile, isDirectCost as isDirectCostFn } from "../../shared/dre-profiles.js";
+import { getDREProfile, isDirectCost as isDirectCostFn, isTax as isTaxFn } from "../../shared/dre-profiles.js";
 import {
   STANDARD_INDICATORS,
   getIndicatorById,
@@ -192,6 +192,36 @@ async function getDirectCosts(companyId: string, range: MonthRange): Promise<num
     .reduce((sum, tx) => sum + n(tx.amount), 0);
 }
 
+/**
+ * Busca o total de impostos/tributos (8.x) do mês, conforme perfil DRE.
+ * O Dashboard deduz impostos da receita bruta ANTES de calcular o Lucro Bruto:
+ *   Lucro Bruto = Receita - Custos Diretos - Impostos
+ */
+async function getTaxes(companyId: string, range: MonthRange): Promise<number> {
+  const company = await prisma.company.findUnique({
+    where: { id: companyId },
+    select: { sector: true },
+  });
+  if (!company) return 0;
+
+  const dreProfile = getDREProfile(company.sector);
+  if (!dreProfile) return 0;
+
+  const transactions = await prisma.transaction.findMany({
+    where: {
+      companyId,
+      tipo_transacao: "EXPENSE",
+      status: "COMPLETED",
+      date: { gte: range.start, lt: range.end },
+    },
+    include: { category: true },
+  });
+
+  return transactions
+    .filter((tx) => tx.category && isTaxFn(tx.category.code, dreProfile))
+    .reduce((sum, tx) => sum + n(tx.amount), 0);
+}
+
 // ============================================
 // CALCULADORES POR INDICADOR
 // ============================================
@@ -208,8 +238,12 @@ const calculators: Record<string, Calculator> = {
     const receita = await getRevenueTotal(companyId, range);
     if (receita === 0) return unavailable(ind, "Sem receita no mês para calcular a margem bruta.");
     const csp = await getDirectCosts(companyId, range);
-    const margem = ((receita - csp) / receita) * 100;
-    return result(ind, margem, `A margem bruta foi de ${formatPercent(margem)} — de cada R$ 100 de receita, ${formatBRL(receita - csp)} ficou após os custos diretos.`);
+    const impostos = await getTaxes(companyId, range);
+    // Fórmula alinhada com o Dashboard (Frente 4):
+    // Lucro Bruto = Receita - Custos Diretos - Impostos
+    const lucroBruto = receita - csp - impostos;
+    const margem = (lucroBruto / receita) * 100;
+    return result(ind, margem, `A margem bruta foi de ${formatPercent(margem)} — de cada R$ 100 de receita, ${formatBRL(lucroBruto)} ficou após custos diretos (${formatBRL(csp)}) e impostos (${formatBRL(impostos)}).`);
   },
 
   async margem_liquida(companyId, month) {
@@ -227,8 +261,11 @@ const calculators: Record<string, Calculator> = {
     const range = parseMonth(month);
     const receita = await getRevenueTotal(companyId, range);
     const csp = await getDirectCosts(companyId, range);
-    const lucro = receita - csp;
-    return result(ind, lucro, `O lucro bruto foi de ${formatBRL(lucro)} — receita de ${formatBRL(receita)} menos custos diretos de ${formatBRL(csp)}.`);
+    const impostos = await getTaxes(companyId, range);
+    // Fórmula alinhada com o Dashboard (Frente 4):
+    // Lucro Bruto = Receita - Custos Diretos - Impostos
+    const lucro = receita - csp - impostos;
+    return result(ind, lucro, `O lucro bruto foi de ${formatBRL(lucro)} — receita de ${formatBRL(receita)} menos custos diretos (${formatBRL(csp)}) e impostos (${formatBRL(impostos)}).`);
   },
 
   async lucro_liquido(companyId, month) {
