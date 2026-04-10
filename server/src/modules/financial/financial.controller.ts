@@ -479,10 +479,11 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
 });
 
 // POST /api/financial/transactions
+// Aceita counterpartyId (se já existe) OU counterpartyName (texto livre, cria automaticamente)
 router.post("/transactions", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
-    const { date, description, amount, type, notes, counterpartyId, dueDate, paymentDate, receiptDate, documentNumber } = req.body;
+    const { date, description, amount, type, notes, counterpartyId, counterpartyName, dueDate, paymentDate, receiptDate, documentNumber, categoryId } = req.body;
 
     if (!date || !description || !amount || !type) {
       return res.status(400).json({ success: false, error: "Campos obrigatórios: date, description, amount, type" });
@@ -498,6 +499,32 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
       status = "COMPLETED";
     }
 
+    // Resolver contraparte: se veio counterpartyName (texto livre), buscar ou criar
+    let resolvedCounterpartyId = counterpartyId || null;
+    if (!resolvedCounterpartyId && counterpartyName && counterpartyName.trim()) {
+      const trimmedName = counterpartyName.trim();
+      // Buscar contraparte existente pelo nome (case-insensitive)
+      const existing = await prisma.counterparty.findFirst({
+        where: {
+          companyId,
+          name: { equals: trimmedName, mode: "insensitive" },
+        },
+      });
+      if (existing) {
+        resolvedCounterpartyId = existing.id;
+      } else {
+        // Criar nova contraparte automaticamente
+        const newCp = await prisma.counterparty.create({
+          data: {
+            companyId,
+            name: trimmedName,
+            type: tipo_transacao === "EXPENSE" ? "SUPPLIER" : "CUSTOMER",
+          },
+        });
+        resolvedCounterpartyId = newCp.id;
+      }
+    }
+
     const transaction = await prisma.transaction.create({
       data: {
         companyId,
@@ -507,7 +534,8 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
         tipo_transacao,
         status: status as any,
         source: "MANUAL",
-        counterpartyId: counterpartyId || null,
+        counterpartyId: resolvedCounterpartyId,
+        categoryId: categoryId || null,
         notes: notes || "",
       },
     });
@@ -516,7 +544,7 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
     await prisma.transactionDetail.create({
       data: {
         transactionId: transaction.id,
-        counterpartyId: counterpartyId || null,
+        counterpartyId: resolvedCounterpartyId,
         dueDate: dueDate ? parseLocalDate(dueDate) : null,
         paymentDate: paymentDate ? parseLocalDate(paymentDate) : null,
         receiptDate: receiptDate ? parseLocalDate(receiptDate) : null,
