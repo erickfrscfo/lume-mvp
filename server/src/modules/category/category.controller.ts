@@ -1,21 +1,17 @@
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
-import { authMiddleware } from '../auth/auth.middleware';
+import { prisma } from '../../shared/database.js';
+import { authMiddleware } from '../auth/auth.middleware.js';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 /**
  * GET /api/categories
- * Retorna todas as categorias do plano de contas da empresa do usuário autenticado.
+ * Retorna todas as categorias do plano de contas.
  * Ordenadas por código (1.1, 1.2, ..., 9.5).
  */
-router.get('/', authMiddleware, async (req: Request, res: Response) => {
+router.get('/', authMiddleware, async (_req: Request, res: Response) => {
   try {
-    const user = (req as any).user;
-
     const categories = await prisma.category.findMany({
-      where: { companyId: user.companyId },
       select: {
         id: true,
         name: true,
