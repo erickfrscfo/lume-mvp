@@ -518,7 +518,7 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
           data: {
             companyId,
             name: trimmedName,
-            type: tipo_transacao === "EXPENSE" ? "SUPPLIER" : "CUSTOMER",
+            type: tipo_transacao === "EXPENSE" ? "SUPPLIER" : "CLIENT",
           },
         });
         resolvedCounterpartyId = newCp.id;
