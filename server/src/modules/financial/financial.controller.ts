@@ -3,6 +3,8 @@ import { authMiddleware } from "../auth/auth.middleware.js";
 import { prisma } from "../../shared/database.js";
 import { getDREProfile, isDirectCost, isTax, AVAILABLE_SECTORS } from "../../shared/dre-profiles.js";
 import { generateAlerts } from "../alerts/alerts.controller.js";
+import { resolveCompanyCategories } from "../../shared/resolve-categories.js";
+import * as aiService from "../ai/ai.service.js";
 import { z } from "zod";
 
 const router = Router();
@@ -559,6 +561,12 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
       generateAlerts(companyId, userId).catch(err => console.error('[Financial] Erro ao gerar alertas após criação:', err));
     }
 
+    // Classificação de categoria por IA em background (se não veio categoryId do frontend)
+    if (!categoryId) {
+      classifyManualTransaction(transaction.id, companyId, userId, description, Math.abs(parseFloat(amount)), tipo_transacao)
+        .catch(err => console.error('[Financial] Erro na classificação IA da transação manual:', err));
+    }
+
     res.json({ success: true, data: transaction });
   } catch (error) {
     next(error);
@@ -863,5 +871,117 @@ router.get("/pending-details", authMiddleware, async (req: Request, res: Respons
     next(error);
   }
 });
+
+// ============================================
+// HELPER: Classificar transação manual por IA (background)
+// Replica a lógica do upload.controller.ts para uma única transação
+// ============================================
+async function classifyManualTransaction(
+  transactionId: string,
+  companyId: string,
+  userId: string,
+  description: string,
+  amount: number,
+  tipo_transacao: string
+) {
+  try {
+    // Buscar categorias globais para match de ID
+    const globalCategories = await prisma.category.findMany({
+      select: { id: true, code: true, name: true, type: true },
+    });
+
+    // Buscar classificações existentes da empresa para contexto
+    const existingClassified = await prisma.transaction.findMany({
+      where: { companyId, categoryId: { not: null } },
+      select: { description: true, category: { select: { code: true } } },
+      distinct: ["description"],
+      take: 100,
+    });
+    const accumulatedClassifications = existingClassified
+      .filter((t) => t.category?.code)
+      .map((t) => ({ description: t.description, categoryCode: t.category!.code }));
+
+    // Chamar IA para classificar
+    const batch = [{ id: transactionId, description, amount, type: tipo_transacao }];
+    const classifications = await aiService.classifyTransactions(
+      userId,
+      companyId,
+      batch,
+      accumulatedClassifications
+    );
+
+    if (classifications && classifications.length > 0) {
+      const classification = classifications[0];
+      const catPrefix = parseInt(classification.categoryCode.split(".")[0]);
+      const isRevenueCategory = catPrefix <= 2;
+      const isExpenseTransaction = tipo_transacao === "EXPENSE";
+      const isIncomeTransaction = tipo_transacao === "INCOME";
+
+      let finalCategoryCode = classification.categoryCode;
+      if (isExpenseTransaction && isRevenueCategory) {
+        console.warn(`[Manual] IA classificou despesa "${description}" como receita (${classification.categoryCode}). Aplicando fallback 5.0.`);
+        finalCategoryCode = "5.0";
+      } else if (isIncomeTransaction && !isRevenueCategory) {
+        console.warn(`[Manual] IA classificou receita "${description}" como despesa (${classification.categoryCode}). Aplicando fallback 2.5.`);
+        finalCategoryCode = "2.5";
+      }
+
+      const finalCategory = globalCategories.find((c) => c.code === finalCategoryCode);
+      if (finalCategory) {
+        await prisma.transaction.update({
+          where: { id: transactionId },
+          data: {
+            categoryId: finalCategory.id,
+            aiClassified: true,
+            confidence: classification.confidence,
+          },
+        });
+        console.log(`[Manual] Transação "${description}" classificada como ${finalCategory.name} (${finalCategoryCode}) com ${Math.round(classification.confidence * 100)}% de confiança.`);
+      }
+    }
+
+    // Classificar tipo de custo para despesas
+    if (tipo_transacao === "EXPENSE") {
+      const txWithCategory = await prisma.transaction.findUnique({
+        where: { id: transactionId },
+        include: { category: true },
+      });
+
+      if (txWithCategory) {
+        const companyForCost = await prisma.company.findUnique({
+          where: { id: companyId },
+          select: { activity: true },
+        });
+
+        try {
+          const costBatch = [{
+            id: transactionId,
+            description,
+            amount,
+            categoryName: txWithCategory.category?.name,
+          }];
+          const costClassifications = await aiService.classifyCostType(
+            userId,
+            costBatch,
+            companyForCost?.activity
+          );
+          if (costClassifications && costClassifications.length > 0) {
+            await prisma.transaction.update({
+              where: { id: transactionId },
+              data: {
+                tipo_custo: costClassifications[0].costType,
+                costConfidence: costClassifications[0].confidence,
+              },
+            });
+          }
+        } catch (costErr) {
+          console.error('[Manual] Erro na classificação de tipo de custo:', costErr);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Manual] Erro na classificação IA:', err);
+  }
+}
 
 export default router;
