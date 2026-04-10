@@ -441,7 +441,7 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
         costConfidence: t.costConfidence ? Number(t.costConfidence) : null,
         status: t.status,
         source: t.source,
-        category: t.category ? { code: t.category.code, name: t.category.name } : null,
+        category: t.category ? { id: t.category.id, code: t.category.code, name: t.category.name } : null,
         counterparty: t.counterparty ? {
           id: t.counterparty.id,
           name: t.counterparty.name,
@@ -575,7 +575,7 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
     }
 
     const {
-      date, description, amount, notes, counterpartyId,
+      date, description, amount, notes, counterpartyId, categoryId,
       dueDate, paymentDate, receiptDate,
       amountPaid, amountReceived, discount, interest,
       documentNumber, bankReference, reconciliationNotes,
@@ -588,6 +588,7 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
     if (amount !== undefined) txUpdateData.amount = Math.abs(parseFloat(amount));
     if (notes !== undefined) txUpdateData.notes = notes;
     if (counterpartyId !== undefined) txUpdateData.counterpartyId = counterpartyId || null;
+    if (categoryId !== undefined) txUpdateData.categoryId = categoryId || null;
 
     // Status derivado: se paymentDate/receiptDate preenchido = COMPLETED, senão = PENDING
     if (paymentDate !== undefined || receiptDate !== undefined) {
