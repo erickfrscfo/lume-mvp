@@ -12,11 +12,13 @@
 import { prisma } from "./database.js";
 
 export interface ResolvedCategory {
+  id?: string;
   code: string;
   name: string;
   type: "INCOME" | "EXPENSE";
   parentCode: string | null;
   isActive: boolean;
+  source?: "GLOBAL" | "CUSTOM";
 }
 
 /**
@@ -49,11 +51,13 @@ export async function resolveCompanyCategories(
     });
 
     return customCategories.map((cat) => ({
+      id: cat.id,
       code: cat.code,
       name: cat.name,
       type: cat.type as "INCOME" | "EXPENSE",
       parentCode: cat.parentCode,
       isActive: cat.isActive,
+      source: "CUSTOM",
     }));
   }
 
@@ -64,11 +68,13 @@ export async function resolveCompanyCategories(
   });
 
   return globalCategories.map((cat) => ({
+    id: cat.id,
     code: cat.code,
     name: cat.name,
     type: cat.type as "INCOME" | "EXPENSE",
     parentCode: cat.parent?.code || null,
     isActive: true,
+    source: "GLOBAL",
   }));
 }
 

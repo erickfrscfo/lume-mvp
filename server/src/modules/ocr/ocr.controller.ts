@@ -10,6 +10,7 @@ import { promisify } from "util";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { resolveCompanyCategories } from "../../shared/resolve-categories.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -269,37 +270,33 @@ async function buildFileContent(file: Express.Multer.File): Promise<any[]> {
 // ============================================
 // Buscar categoria por nome (fuzzy match)
 // ============================================
-async function findCategoryByName(name: string, type: string): Promise<{ id: string; name: string; code: string } | null> {
+async function findCategoryByName(companyId: string, name: string, type: string): Promise<{ id: string; name: string; code: string } | null> {
   if (!name) return null;
+  const categories = await resolveCompanyCategories(companyId);
+  const normalizedName = name.toLowerCase();
 
-  // Tentar match exato primeiro
-  let cat = await prisma.category.findFirst({
-    where: {
-      name: { equals: name, mode: "insensitive" },
-      type: type as any,
-    },
+  const match = categories.find((cat) =>
+    cat.type === type && cat.name.toLowerCase() === normalizedName
+  ) || categories.find((cat) =>
+    cat.type === type && cat.name.toLowerCase().includes(normalizedName)
+  ) || categories.find((cat) =>
+    cat.type === type && normalizedName.includes(cat.name.toLowerCase())
+  );
+
+  if (!match) return null;
+
+  const globalCategory = await prisma.category.findFirst({
+    where: { code: match.code, type: type as any },
+    select: { id: true },
   });
 
-  if (!cat) {
-    // Tentar match parcial
-    cat = await prisma.category.findFirst({
-      where: {
-        name: { contains: name, mode: "insensitive" },
-        type: type as any,
-      },
-    });
-  }
+  return { id: globalCategory?.id || `custom:${match.code}`, name: match.name, code: match.code };
+}
 
-  if (!cat) {
-    // Tentar match com BOTH
-    cat = await prisma.category.findFirst({
-      where: {
-        name: { contains: name, mode: "insensitive" },
-      },
-    });
-  }
-
-  return cat ? { id: cat.id, name: cat.name, code: cat.code } : null;
+async function resolveCategoryIdByName(companyId: string, name: string, type: string): Promise<string | null> {
+  const match = await findCategoryByName(companyId, name, type);
+  if (!match || match.id.startsWith("custom:")) return null;
+  return match.id;
 }
 
 // ============================================
@@ -381,7 +378,7 @@ router.post(
       let categoriaSugerida = extractedData.categoria_sugerida || null;
       let categoriaMatch = null;
       if (categoriaSugerida) {
-        categoriaMatch = await findCategoryByName(categoriaSugerida, tipoTransacao);
+        categoriaMatch = await findCategoryByName(companyId, categoriaSugerida, tipoTransacao);
       }
 
       // Salvar o documento no banco com os dados extraídos
@@ -633,14 +630,7 @@ router.post(
       // Buscar categoria (se fornecida)
       let categoryId: string | null = null;
       if (categoria) {
-        const cat = await prisma.category.findFirst({
-          where: {
-            name: { contains: categoria, mode: "insensitive" },
-          },
-        });
-        if (cat) {
-          categoryId = cat.id;
-        }
+        categoryId = await resolveCategoryIdByName(companyId, categoria, tipo_transacao || "EXPENSE");
       }
 
       // Determinar tipo_custo para despesas

@@ -44,6 +44,16 @@ function generateCompanyCode(companyName: string): string {
   return `${prefix}${suffix}`;
 }
 
+async function generateUniqueCompanyCode(companyName: string): Promise<string> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const code = generateCompanyCode(companyName);
+    const existing = await prisma.company.findUnique({ where: { code } });
+    if (!existing) return code;
+  }
+
+  throw new AppError("Não foi possível gerar um código único para a empresa", 500);
+}
+
 /**
  * Salva as categorias customizadas enviadas pelo admin na tabela CompanyCategory.
  * Se nenhuma categoria customizada for enviada mas useCustomChart = true,
@@ -126,7 +136,7 @@ export async function register(input: RegisterInput) {
   const hashedPassword = await bcrypt.hash(input.password, 12);
 
   // Gerar código da empresa
-  const companyCode = generateCompanyCode(input.company.name);
+  const companyCode = await generateUniqueCompanyCode(input.company.name);
 
   const useCustomChart = input.company.useCustomChart ?? false;
 

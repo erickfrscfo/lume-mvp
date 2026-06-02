@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../../shared/database.js';
 import { authMiddleware } from '../auth/auth.middleware.js';
+import { resolveCompanyCategories } from '../../shared/resolve-categories.js';
 
 const router = Router();
 
@@ -9,9 +10,11 @@ const router = Router();
  * Retorna todas as categorias do plano de contas.
  * Ordenadas por código (1.1, 1.2, ..., 9.5).
  */
-router.get('/', authMiddleware, async (_req: Request, res: Response) => {
+router.get('/', authMiddleware, async (req: Request, res: Response) => {
   try {
-    const categories = await prisma.category.findMany({
+    const companyId = (req as any).companyId;
+    const resolvedCategories = await resolveCompanyCategories(companyId);
+    const globalCategories = await prisma.category.findMany({
       select: {
         id: true,
         name: true,
@@ -19,6 +22,19 @@ router.get('/', authMiddleware, async (_req: Request, res: Response) => {
         type: true,
       },
       orderBy: { code: 'asc' },
+    });
+    const globalByCode = new Map(globalCategories.map((cat) => [cat.code, cat]));
+
+    const categories = resolvedCategories.map((cat) => {
+      const global = globalByCode.get(cat.code);
+      return {
+        id: global?.id || `custom:${cat.code}`,
+        globalCategoryId: global?.id || null,
+        name: cat.name,
+        code: cat.code,
+        type: cat.type,
+        source: cat.source || 'GLOBAL',
+      };
     });
 
     return res.json({ data: categories });

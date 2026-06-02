@@ -1,345 +1,381 @@
-# Lume Backend (MVP)
+# Esnork - Backend
 
-**Backend do MVP Lume — CFO Virtual com IA.** API REST construída com Express + Prisma + PostgreSQL, com integração OpenAI para classificação de transações, chat financeiro, alertas inteligentes e reunião executiva.
+## 📋 Visão Geral
 
----
+Backend da plataforma Esnork, um sistema de inteligência financeira para PMEs. A API REST é responsável por autenticação, empresas, plano de contas, transações, importação CSV, OCR de documentos, conciliação, alertas, insights, relatórios e integrações com IA.
 
-## Stack Tecnológica
+O servidor fica em `lume-mvp/server` e usa Node.js, Express, Prisma, PostgreSQL e OpenAI.
 
-| Tecnologia | Versão | Uso |
-|------------|--------|-----|
-| **Node.js** | 22+ | Runtime |
-| **TypeScript** | 5.6+ | Tipagem estática |
-| **Express** | 4.21+ | Framework HTTP |
-| **Prisma** | 5.22+ | ORM e migrações de banco |
-| **PostgreSQL** | 15+ | Banco de dados relacional |
-| **OpenAI** | 4.73+ | IA para classificação, chat e análises |
-| **JSON Web Token** | 9+ | Autenticação JWT |
-| **bcryptjs** | 2.4+ | Hash de senhas |
-| **Multer** | 1.4+ | Upload de arquivos (CSV) |
-| **csv-parse** | 5.6+ | Parsing de arquivos CSV |
-| **Zod** | 3.23+ | Validação de schemas |
-| **Helmet** | 8+ | Segurança HTTP headers |
-| **CORS** | 2.8+ | Cross-Origin Resource Sharing |
+## 🚀 Quick Start
 
----
+### Pré-requisitos
 
-## Estrutura de Pastas e Arquivos
+- Node.js 22+ recomendado
+- npm 10+
+- PostgreSQL 15+
+- Chave da API OpenAI
 
-```
-lume-mvp/
-├── server/
-│   ├── prisma/
-│   │   ├── schema.prisma              # Schema do banco (modelos, relações, enums)
-│   │   └── seed.ts                    # Script de seed para dados iniciais
-│   │
-│   ├── src/
-│   │   ├── config/
-│   │   │   └── env.ts                 # Variáveis de ambiente tipadas (DATABASE_URL, JWT_SECRET, etc.)
-│   │   │
-│   │   ├── modules/
-│   │   │   ├── ai/
-│   │   │   │   ├── ai.controller.ts   # Endpoints de IA (chat, reunião executiva)
-│   │   │   │   └── ai.service.ts      # Serviço OpenAI (classificação, chat, análise)
-│   │   │   │
-│   │   │   ├── alerts/
-│   │   │   │   ├── alerts.controller.ts   # Endpoints de alertas financeiros
-│   │   │   │   ├── alerts.detector.ts     # Lógica de detecção de alertas
-│   │   │   │   ├── alerts.humanizer.ts    # Humanização de alertas com IA
-│   │   │   │   └── alerts.templates.ts    # Templates de mensagens de alerta
-│   │   │   │
-│   │   │   ├── auth/
-│   │   │   │   ├── auth.controller.ts     # Endpoints de autenticação (login, registro)
-│   │   │   │   ├── auth.middleware.ts      # Middleware JWT (verificação de token)
-│   │   │   │   └── auth.service.ts        # Serviço de autenticação (hash, token)
-│   │   │   │
-│   │   │   ├── financial/
-│   │   │   │   └── financial.controller.ts # Endpoints do dashboard (indicadores, transações)
-│   │   │   │
-│   │   │   ├── scenarios/
-│   │   │   │   └── scenarios.controller.ts # Endpoints de cenários financeiros (CRUD)
-│   │   │   │
-│   │   │   └── upload/
-│   │   │       └── upload.controller.ts    # Endpoints de upload CSV (importação + classificação IA)
-│   │   │
-│   │   ├── shared/
-│   │   │   ├── database.ts            # Instância do Prisma Client (singleton)
-│   │   │   └── errors.ts             # Classes de erro customizadas (AppError, etc.)
-│   │   │
-│   │   └── index.ts                   # Entry point: Express app, rotas, middlewares
-│   │
-│   ├── .env.example                   # Exemplo de variáveis de ambiente
-│   ├── package.json                   # Dependências e scripts npm
-│   └── tsconfig.json                  # Configuração do TypeScript
-│
-├── templates/                         # Modelos CSV para importação
-│   ├── faturas_pagar_modelo.csv       # Modelo de faturas a pagar
-│   ├── faturas_receber_modelo.csv     # Modelo de faturas a receber
-│   └── transacoes_modelo.csv          # Modelo de transações
-│
-├── shared/                            # Pasta compartilhada (vazia no momento)
-├── .gitignore                         # Arquivos ignorados pelo Git
-└── README.md                          # Este arquivo
-```
-
----
-
-## Módulos
-
-### Auth (`modules/auth/`)
-
-Módulo de autenticação com registro e login de usuários via JWT.
-
-| Arquivo | Responsabilidade |
-|---------|-----------------|
-| **auth.controller.ts** | Endpoints `POST /api/auth/register` e `POST /api/auth/login`. Valida dados com Zod, cria usuário/empresa e retorna token JWT. |
-| **auth.middleware.ts** | Middleware que extrai e valida o token JWT do header `Authorization: Bearer <token>`. Injeta `req.user` com `userId` e `companyId`. |
-| **auth.service.ts** | Funções de hash de senha (bcrypt) e geração/verificação de tokens JWT. |
-
-### Financial (`modules/financial/`)
-
-Módulo principal do dashboard financeiro.
-
-| Arquivo | Responsabilidade |
-|---------|-----------------|
-| **financial.controller.ts** | Endpoint `GET /api/financial/dashboard` — calcula Saldo de Caixa (todas as transações), Taxa de Queima (média 6 meses), Runway, variação percentual e crescimento de receita. Endpoint `GET /api/financial/transactions` — listagem paginada com filtros por tipo e período. |
-
-### Upload (`modules/upload/`)
-
-Módulo de importação de dados via CSV.
-
-| Arquivo | Responsabilidade |
-|---------|-----------------|
-| **upload.controller.ts** | Endpoint `POST /api/upload/csv` — recebe arquivo CSV via Multer, parseia com csv-parse, valida e insere transações no banco. Após inserção, dispara classificação por IA em lotes de 20 transações. Endpoint `GET /api/upload/history` — histórico de uploads. |
-
-### AI (`modules/ai/`)
-
-Módulo de integração com OpenAI.
-
-| Arquivo | Responsabilidade |
-|---------|-----------------|
-| **ai.controller.ts** | Endpoints de chat financeiro (`POST /api/ai/chat`), reunião executiva (`POST /api/ai/meeting`) e explicação de indicadores (`POST /api/ai/explain`). |
-| **ai.service.ts** | Serviço que encapsula chamadas à API OpenAI. Funções: `classifyTransactions` (classificação de transações em categorias), `chat` (assistente financeiro), `generateMeetingReport` (relatório executivo), `explainMetric` (explicação de indicadores). |
-
-### Alerts (`modules/alerts/`)
-
-Módulo de alertas financeiros inteligentes.
-
-| Arquivo | Responsabilidade |
-|---------|-----------------|
-| **alerts.controller.ts** | Endpoints `GET /api/alerts` (listar alertas) e `PATCH /api/alerts/:id/dismiss` (dispensar alerta). |
-| **alerts.detector.ts** | Lógica de detecção automática de alertas: saldo negativo, burn rate elevado, runway curto, queda de receita, etc. |
-| **alerts.humanizer.ts** | Usa IA para transformar alertas técnicos em mensagens compreensíveis para o usuário. |
-| **alerts.templates.ts** | Templates de mensagens de alerta com placeholders para valores dinâmicos. |
-
-### Scenarios (`modules/scenarios/`)
-
-Módulo de cenários financeiros (what-if).
-
-| Arquivo | Responsabilidade |
-|---------|-----------------|
-| **scenarios.controller.ts** | CRUD de cenários financeiros: `GET /api/scenarios`, `POST /api/scenarios`, `PUT /api/scenarios/:id`, `DELETE /api/scenarios/:id`, `PATCH /api/scenarios/:id/toggle`. Cada cenário pode ter ajustes mensais de receita/despesa e valores únicos. |
-
----
-
-## Endpoints da API
-
-### Autenticação
-
-| Método | Rota | Descrição | Auth |
-|--------|------|-----------|------|
-| `POST` | `/api/auth/register` | Registrar usuário e empresa | Não |
-| `POST` | `/api/auth/login` | Login (retorna JWT) | Não |
-
-### Dashboard Financeiro
-
-| Método | Rota | Descrição | Auth |
-|--------|------|-----------|------|
-| `GET` | `/api/financial/dashboard` | Indicadores: saldo, burn rate, runway, variações | Sim |
-| `GET` | `/api/financial/transactions` | Transações paginadas com filtros | Sim |
-
-### Upload de Dados
-
-| Método | Rota | Descrição | Auth |
-|--------|------|-----------|------|
-| `POST` | `/api/upload/csv` | Upload e importação de CSV | Sim |
-| `GET` | `/api/upload/history` | Histórico de uploads | Sim |
-
-### Inteligência Artificial
-
-| Método | Rota | Descrição | Auth |
-|--------|------|-----------|------|
-| `POST` | `/api/ai/chat` | Chat com assistente financeiro | Sim |
-| `POST` | `/api/ai/meeting` | Gerar relatório de reunião executiva | Sim |
-| `POST` | `/api/ai/explain` | Explicar indicador financeiro | Sim |
-
-### Alertas
-
-| Método | Rota | Descrição | Auth |
-|--------|------|-----------|------|
-| `GET` | `/api/alerts` | Listar alertas da empresa | Sim |
-| `PATCH` | `/api/alerts/:id/dismiss` | Dispensar um alerta | Sim |
-
-### Cenários
-
-| Método | Rota | Descrição | Auth |
-|--------|------|-----------|------|
-| `GET` | `/api/scenarios` | Listar cenários | Sim |
-| `POST` | `/api/scenarios` | Criar cenário | Sim |
-| `PUT` | `/api/scenarios/:id` | Atualizar cenário | Sim |
-| `DELETE` | `/api/scenarios/:id` | Deletar cenário | Sim |
-| `PATCH` | `/api/scenarios/:id/toggle` | Ativar/desativar cenário | Sim |
-
----
-
-## Variáveis de Ambiente
-
-Crie um arquivo `.env` dentro da pasta `server/` com base no `.env.example`:
-
-```env
-DATABASE_URL=postgresql://usuario:senha@host:porta/banco
-JWT_SECRET=sua_chave_secreta_jwt
-OPENAI_API_KEY=sk-sua-chave-openai
-PORT=3001
-```
-
-| Variável | Descrição |
-|----------|-----------|
-| `DATABASE_URL` | Connection string do PostgreSQL (Railway) |
-| `JWT_SECRET` | Chave secreta para assinatura de tokens JWT |
-| `OPENAI_API_KEY` | Chave da API OpenAI para classificação e chat |
-| `PORT` | Porta do servidor (padrão: 3001) |
-
----
-
-## Scripts Disponíveis
-
-Todos os scripts devem ser executados dentro da pasta `server/`:
+### Instalação
 
 ```bash
-cd server
-
-# Desenvolvimento (hot reload)
-npm run dev
-
-# Build para produção
-npm run build
-
-# Iniciar em produção
-npm start
-
-# Gerar Prisma Client
-npm run db:generate
-
-# Aplicar schema ao banco (sem migration)
-npm run db:push
-
-# Criar migration
-npm run db:migrate
-
-# Rodar seed (dados iniciais)
-npm run db:seed
-
-# Abrir Prisma Studio (UI visual do banco)
-npm run db:studio
-```
-
----
-
-## Setup Local
-
-**Passo 1 — Clone o repositório e instale dependências:**
-
-```bash
-cd ~/Desktop/lume-mvp/server
+cd lume-mvp/server
 npm install
 ```
 
-**Passo 2 — Configure as variáveis de ambiente:**
+### Configuração
 
-```bash
-cp .env.example .env
-# Edite o .env com suas credenciais
+Copie `server/.env.example` para `server/.env` e preencha:
+
+```env
+DATABASE_URL="postgresql://usuario:senha@host:porta/nome_banco?sslmode=require"
+JWT_SECRET="gere-uma-string-aleatoria-com-pelo-menos-32-caracteres-aqui"
+JWT_EXPIRES_IN="7d"
+OPENAI_API_KEY="sk-sua-chave-aqui"
+PORT=3001
+NODE_ENV="development"
+CORS_ORIGIN="http://localhost:5173"
+ADMIN_ONBOARDING_KEY="sua-chave-admin"
 ```
 
-**Passo 3 — Configure o banco de dados:**
+> `ADMIN_ONBOARDING_KEY` é exigida por `src/config/env.ts` e precisa existir mesmo em desenvolvimento.
+
+### Banco de dados
 
 ```bash
+cd lume-mvp/server
 npm run db:generate
-npm run db:push
-npm run db:seed    # opcional: dados iniciais
+npm run db:migrate
+npm run db:seed
 ```
 
-**Passo 4 — Inicie o servidor:**
+### Rodar em desenvolvimento
 
 ```bash
 npm run dev
 ```
 
-O servidor estará disponível em `http://localhost:3001`.
+Servidor padrão: `http://localhost:3001`.
 
----
-
-## Deploy (Railway)
-
-O projeto está configurado para deploy automático no **Railway** via push para a branch `main`.
+### Build e produção
 
 ```bash
-git add .
-git commit -m "descrição da mudança"
-git push origin main
+npm run build
+npm start
 ```
 
-O Railway detecta o push, executa `npm run build` e inicia com `npm start`. O banco PostgreSQL é provisionado como serviço separado no Railway.
+## 📁 Estrutura do Projeto
 
-**Configuração no Railway:**
-- **Build Command:** `cd server && npm install && npm run db:generate && npm run build`
-- **Start Command:** `cd server && npm start`
-- **Variables:** Configurar `DATABASE_URL`, `JWT_SECRET`, `OPENAI_API_KEY` e `PORT` nas variáveis do serviço.
-
----
-
-## Templates CSV
-
-A pasta `templates/` contém modelos de CSV para importação de dados:
-
-| Arquivo | Descrição |
-|---------|-----------|
-| **transacoes_modelo.csv** | Modelo padrão de transações (data, tipo, descrição, valor) |
-| **faturas_pagar_modelo.csv** | Modelo de faturas a pagar |
-| **faturas_receber_modelo.csv** | Modelo de faturas a receber |
-
----
-
-## Banco de Dados
-
-O schema Prisma (`server/prisma/schema.prisma`) define os seguintes modelos principais:
-
-| Modelo | Descrição |
-|--------|-----------|
-| **User** | Usuários do sistema (email, senha hash, empresa) |
-| **Company** | Empresa vinculada ao usuário |
-| **Transaction** | Transações financeiras (data, tipo, valor, descrição, categoria) |
-| **Category** | Categorias de transações (classificadas por IA) |
-| **Upload** | Registro de uploads de CSV (status, total de linhas) |
-| **Alert** | Alertas financeiros gerados automaticamente |
-| **Scenario** | Cenários financeiros (what-if) com ajustes |
-
----
-
-## Dependências Principais
-
-```json
-{
-  "@prisma/client": "^5.22.0",
-  "bcryptjs": "^2.4.3",
-  "cors": "^2.8.5",
-  "csv-parse": "^5.6.0",
-  "express": "^4.21.0",
-  "helmet": "^8.0.0",
-  "jsonwebtoken": "^9.0.2",
-  "multer": "^1.4.5-lts.1",
-  "openai": "^4.73.0",
-  "zod": "^3.23.8"
-}
+```text
+lume-mvp/
+├── README.md
+├── templates/                         # Modelos CSV para importação
+│   ├── transacoes_modelo.csv
+│   ├── faturas_pagar_modelo.csv
+│   └── faturas_receber_modelo.csv
+└── server/
+    ├── prisma/
+    │   ├── schema.prisma              # Modelos, enums e relações
+    │   ├── seed.ts                    # Seed principal
+    │   ├── seed-conciliation.ts       # Seed de conciliação
+    │   └── migrations/                # Migrações Prisma
+    ├── src/
+    │   ├── config/
+    │   │   └── env.ts                 # Validação de ambiente com Zod
+    │   ├── modules/
+    │   │   ├── ai/                    # Chat, explicações e classificação de custos
+    │   │   ├── alerts/                # Alertas financeiros
+    │   │   ├── auth/                  # Login, registro, sessão e senha
+    │   │   ├── category/              # Plano de contas
+    │   │   ├── counterparties/        # Clientes, fornecedores e contrapartes
+    │   │   ├── documents/             # Documentos fiscais
+    │   │   ├── financial/             # Dashboard, DRE, fluxo e transações
+    │   │   ├── forecast/              # Projeções de caixa
+    │   │   ├── insights/              # Insights de IA
+    │   │   ├── ocr/                   # Extração de dados de PDF/imagem
+    │   │   ├── reconciliations/       # Conciliação financeira
+    │   │   ├── report/                # Relatórios e indicadores
+    │   │   ├── scenarios/             # Cenários what-if
+    │   │   ├── transactions/          # Operações de pagamento/recebimento
+    │   │   └── upload/                # Importação CSV
+    │   ├── shared/                    # Prisma, erros e utilitários compartilhados
+    │   └── index.ts                   # Express app, middlewares e rotas
+    ├── .env.example
+    ├── package.json
+    └── tsconfig.json
 ```
+
+## 🔧 Funcionalidades
+
+- Autenticação por JWT com login por usuário, senha e código da empresa.
+- Onboarding administrativo com chave `X-Admin-Key`.
+- Cadastro de empresa, usuário e plano de contas customizado.
+- Dashboard financeiro com saldo, burn rate, runway, crescimento e métricas agregadas.
+- Fluxo de caixa e DRE por período.
+- CRUD de transações financeiras.
+- Importação CSV com parsing, validação e histórico.
+- Classificação de transações e custos com IA.
+- OCR de PDFs e imagens com GPT-4o para extrair valores, datas, contraparte, categoria sugerida e itens.
+- Confirmação de OCR com criação de documento, contraparte e transação.
+- Alertas financeiros com severidade, leitura, dispensa e geração.
+- Forecast de fluxo financeiro por cenário.
+- Gestão de contrapartes.
+- Gestão de documentos fiscais.
+- Conciliação financeira em lote.
+- Insights de IA com leitura e dispensa.
+- Relatórios dinâmicos com indicadores padrão, customizados e template persistido.
+- Cenários financeiros what-if com chat auxiliar.
+- Plano de contas por empresa, com resolução de categorias customizadas quando existe código global equivalente.
+
+## 📦 Dependências
+
+Versões principais conforme `server/package.json`:
+
+| Pacote | Versão | Uso |
+| --- | --- | --- |
+| `express` | `^4.21.0` | API HTTP. |
+| `@prisma/client` / `prisma` | `5.22.0` | ORM, migrations e client. |
+| `typescript` | `^5.6.3` | Tipagem e build. |
+| `tsx` | `^4.19.2` | Execução TypeScript em desenvolvimento. |
+| `openai` | `^4.104.0` | Chat, OCR e classificações com IA. |
+| `jsonwebtoken` | `^9.0.2` | Tokens JWT. |
+| `bcryptjs` | `^2.4.3` | Hash de senhas. |
+| `zod` | `^3.23.8` | Validação de payloads e ambiente. |
+| `multer` | `^1.4.5-lts.1` | Upload de arquivos. |
+| `csv-parse` | `^5.6.0` | Parsing CSV. |
+| `pdf-to-png-converter` | `^3.14.0` | Conversão de PDFs para OCR. |
+| `helmet` | `^8.0.0` | Headers de segurança. |
+| `cors` | `^2.8.5` | CORS para frontend. |
+| `date-fns` | `^2.30.0` | Manipulação de datas. |
+
+## 🔌 Integrations
+
+### PostgreSQL
+
+O banco é configurado por `DATABASE_URL`. O schema Prisma contém os principais modelos:
+
+- `Company`, `User`, `CompanyCategory`, `Category`
+- `Transaction`, `TransactionDetail`, `Upload`
+- `Counterparty`, `Document`
+- `Scenario`, `Alert`, `AiInsight`, `AiInteraction`
+- `ReportTemplate`, `CustomIndicator`, `PromptTemplate`
+
+### OpenAI
+
+Usado nos módulos:
+
+- `ai`: chat financeiro, explicação de indicadores e classificação de custos.
+- `upload`: classificação de transações importadas por CSV.
+- `ocr`: extração estruturada de documentos PDF/imagem.
+- `alerts`: humanização de alertas.
+- `report`: criação de indicadores customizados.
+
+### Frontend
+
+Configure `CORS_ORIGIN` com a URL do frontend:
+
+```env
+CORS_ORIGIN="http://localhost:5173"
+```
+
+Use `CORS_ORIGIN="*"` apenas em ambiente controlado de MVP.
+
+## Endpoints
+
+Todas as rotas abaixo são prefixadas por `/api`.
+
+### Health
+
+| Método | Rota | Auth | Descrição |
+| --- | --- | --- | --- |
+| `GET` | `/health` | Não | Status do servidor. |
+
+### Auth
+
+| Método | Rota | Auth | Descrição |
+| --- | --- | --- | --- |
+| `POST` | `/auth/validate-admin-key` | `X-Admin-Key` | Valida chave de onboarding administrativo. |
+| `POST` | `/auth/register` | `X-Admin-Key` | Cria empresa, usuário e plano de contas. |
+| `POST` | `/auth/login` | Não | Login e emissão de JWT. |
+| `GET` | `/auth/me` | Sim | Dados do usuário autenticado. |
+| `PATCH` | `/auth/change-password` | Sim | Alteração de senha. |
+
+### Financial
+
+| Método | Rota | Auth | Descrição |
+| --- | --- | --- | --- |
+| `GET` | `/financial/dashboard` | Sim | Indicadores gerais. |
+| `GET` | `/financial/cashflow` | Sim | Fluxo de caixa por meses. |
+| `GET` | `/financial/dre` | Sim | Demonstrativo de resultado. |
+| `GET` | `/financial/sectors` | Sim | Setores suportados. |
+| `GET` | `/financial/transactions` | Sim | Lista transações com filtros. |
+| `POST` | `/financial/transactions` | Sim | Cria transação. |
+| `PATCH` | `/financial/transactions/:id` | Sim | Atualiza transação. |
+| `DELETE` | `/financial/transactions/:id` | Sim | Remove transação. |
+| `GET` | `/financial/cost-breakdown` | Sim | Breakdown de custos fixos/variáveis. |
+| `GET` | `/financial/pending-details` | Sim | Transações pendentes de detalhamento. |
+
+### Upload CSV
+
+| Método | Rota | Auth | Descrição |
+| --- | --- | --- | --- |
+| `POST` | `/upload/csv` | Sim | Importa arquivo CSV. |
+| `GET` | `/upload/history` | Sim | Histórico de uploads. |
+| `GET` | `/upload/template` | Sim | Template esperado para importação. |
+
+### OCR
+
+| Método | Rota | Auth | Descrição |
+| --- | --- | --- | --- |
+| `POST` | `/ocr/extract` | Sim | Extrai dados de PDF/imagem. |
+| `GET` | `/ocr/history` | Sim | Histórico de documentos extraídos. |
+| `GET` | `/ocr/document/:documentId` | Sim | Detalhes extraídos de um documento. |
+| `POST` | `/ocr/confirm/:documentId` | Sim | Confirma OCR e cria transação. |
+
+### AI
+
+| Método | Rota | Auth | Descrição |
+| --- | --- | --- | --- |
+| `POST` | `/ai/chat` | Sim | Chat financeiro. |
+| `POST` | `/ai/explain` | Sim | Explica indicador financeiro. |
+| `POST` | `/ai/classify-cost-type` | Sim | Classifica custo fixo/variável. |
+| `GET` | `/ai/pending-cost-classifications` | Sim | Lista transações pendentes de classificação. |
+| `PUT` | `/ai/update-cost-type/:id` | Sim | Atualiza tipo de custo manualmente. |
+| `GET` | `/ai/suggested-prompts` | Sim | Sugestões de prompts. |
+| `GET` | `/ai/chat/history` | Sim | Histórico de interações. |
+
+### Alertas e Insights
+
+| Método | Rota | Auth | Descrição |
+| --- | --- | --- | --- |
+| `GET` | `/alerts` | Sim | Lista alertas. |
+| `PATCH` | `/alerts/:id/read` | Sim | Marca alerta como lido. |
+| `PATCH` | `/alerts/:id/dismiss` | Sim | Dispensa alerta. |
+| `POST` | `/alerts/generate` | Sim | Gera alertas manualmente. |
+| `GET` | `/insights` | Sim | Lista insights. |
+| `PATCH` | `/insights/:id/read` | Sim | Marca insight como lido. |
+| `PATCH` | `/insights/:id/dismiss` | Sim | Dispensa insight. |
+
+### Cenários, Forecast e Relatórios
+
+| Método | Rota | Auth | Descrição |
+| --- | --- | --- | --- |
+| `GET` | `/scenarios` | Sim | Lista cenários. |
+| `POST` | `/scenarios` | Sim | Cria cenário. |
+| `PUT` | `/scenarios/:id` | Sim | Atualiza cenário. |
+| `PATCH` | `/scenarios/:id/toggle` | Sim | Ativa/desativa cenário. |
+| `DELETE` | `/scenarios/:id` | Sim | Remove cenário. |
+| `POST` | `/scenarios/ai-chat` | Sim | Chat auxiliar para cenários. |
+| `GET` | `/forecast` | Sim | Gera forecast. |
+| `GET` | `/report/indicators` | Sim | Lista indicadores disponíveis. |
+| `GET` | `/report/template` | Sim | Busca template salvo. |
+| `PUT` | `/report/template` | Sim | Salva template. |
+| `POST` | `/report/generate` | Sim | Gera relatório. |
+| `POST` | `/report/indicators/custom` | Sim | Cria indicador customizado. |
+| `DELETE` | `/report/indicators/custom/:id` | Sim | Remove indicador customizado. |
+
+### Operacional
+
+| Método | Rota | Auth | Descrição |
+| --- | --- | --- | --- |
+| `GET` | `/transactions` | Sim | Lista transações operacionais. |
+| `PATCH` | `/transactions/:id/mark-paid` | Sim | Marca despesa como paga. |
+| `PATCH` | `/transactions/:id/mark-received` | Sim | Marca receita como recebida. |
+| `GET` | `/counterparties` | Sim | Lista contrapartes. |
+| `POST` | `/counterparties` | Sim | Cria contraparte. |
+| `PUT` | `/counterparties/:id` | Sim | Atualiza contraparte. |
+| `DELETE` | `/counterparties/:id` | Sim | Inativa/remove contraparte. |
+| `GET` | `/documents` | Sim | Lista documentos. |
+| `POST` | `/documents` | Sim | Cria documento. |
+| `PUT` | `/documents/:id` | Sim | Atualiza documento. |
+| `DELETE` | `/documents/:id` | Sim | Remove documento. |
+| `GET` | `/reconciliations/dashboard` | Sim | Dashboard de conciliação. |
+| `POST` | `/reconciliations/batch` | Sim | Conciliação em lote. |
+| `GET` | `/categories` | Sim | Lista plano de contas. |
+
+## Scripts
+
+Todos os comandos abaixo devem ser executados em `lume-mvp/server`:
+
+```bash
+npm run dev          # Desenvolvimento com tsx watch
+npm run build        # Build TypeScript para dist/
+npm start            # Executa dist/index.js
+npm run db:generate  # Gera Prisma Client
+npm run db:push      # Aplica schema sem migration
+npm run db:migrate   # Cria/aplica migration em desenvolvimento
+npm run db:seed      # Roda seed principal
+npm run db:studio    # Abre Prisma Studio
+```
+
+## 🐛 Troubleshooting
+
+### Servidor encerra ao iniciar
+
+Verifique as variáveis obrigatórias em `server/.env`. `JWT_SECRET` precisa ter pelo menos 32 caracteres e `ADMIN_ONBOARDING_KEY` precisa estar definida.
+
+### Erro de conexão com banco
+
+Confirme `DATABASE_URL`, acesso de rede ao PostgreSQL e se o banco exige `sslmode=require`.
+
+### Prisma Client desatualizado
+
+Execute:
+
+```bash
+npm run db:generate
+```
+
+### Migrações não aplicadas
+
+Em desenvolvimento:
+
+```bash
+npm run db:migrate
+```
+
+Em ambientes controlados sem migration:
+
+```bash
+npm run db:push
+```
+
+### OCR falha com PDF ou imagem
+
+Confirme `OPENAI_API_KEY`, tamanho/formato do arquivo e disponibilidade da API OpenAI. Para PDFs problemáticos, converter para JPG/PNG pode melhorar a extração.
+
+### CORS bloqueando o frontend
+
+Configure:
+
+```env
+CORS_ORIGIN="http://localhost:5173"
+```
+
+### Categorias customizadas não gravam na transação
+
+`Transaction.categoryId` referencia a tabela global `Category`. Categorias customizadas são resolvidas por código; quando não existe código global equivalente, a transação permanece sem `categoryId` para evitar violação de chave estrangeira.
+
+## 📝 Changelog
+
+### 2026-06-02 — Correções funcionais
+
+- `/api/categories` passou a resolver o plano de contas da empresa, incluindo categorias customizadas.
+- Criação/edição manual de transações passou a aceitar `categoryCode` e resolver para `Category` global quando possível.
+- OCR passou a sugerir e confirmar categorias usando o plano de contas da empresa.
+- Geração de código da empresa no onboarding passou a verificar colisões antes de criar a empresa.
+- README corrigido para indicar autenticação real dos controllers que usam `router.use(authMiddleware)`.
+
+### 2026-06-02
+
+- README atualizado para refletir a estrutura atual do backend.
+- Documentados módulos adicionados desde a versão inicial: OCR, documentos, contrapartes, conciliação, insights, forecast, relatórios e categorias.
+- Atualizadas dependências reais conforme `server/package.json`.
+- Documentadas variáveis obrigatórias de ambiente, incluindo `ADMIN_ONBOARDING_KEY`.
+- Documentados endpoints registrados em `src/index.ts` e controllers.
+- Incluída observação de segurança sobre controllers sem `authMiddleware` direto.
+
+### Histórico anterior
+
+- API REST inicial com autenticação JWT.
+- Dashboard financeiro, importação CSV e IA financeira.
+- Alertas, cenários e classificação de transações.

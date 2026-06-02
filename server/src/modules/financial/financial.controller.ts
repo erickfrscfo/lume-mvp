@@ -43,6 +43,49 @@ function getEffectiveDate(tx: any): Date {
   }
 }
 
+async function resolveCategoryId(input: {
+  companyId: string;
+  categoryId?: string | null;
+  categoryCode?: string | null;
+  tipoTransacao?: "INCOME" | "EXPENSE";
+}): Promise<string | null> {
+  const { categoryId, categoryCode, tipoTransacao } = input;
+
+  if (categoryCode) {
+    const category = await prisma.category.findFirst({
+      where: {
+        code: categoryCode,
+        ...(tipoTransacao ? { type: tipoTransacao } : {}),
+      },
+      select: { id: true },
+    });
+    return category?.id || null;
+  }
+
+  if (!categoryId) return null;
+
+  if (categoryId.startsWith("custom:")) {
+    const code = categoryId.replace("custom:", "");
+    const category = await prisma.category.findFirst({
+      where: {
+        code,
+        ...(tipoTransacao ? { type: tipoTransacao } : {}),
+      },
+      select: { id: true },
+    });
+    return category?.id || null;
+  }
+
+  const category = await prisma.category.findUnique({
+    where: { id: categoryId },
+    select: { id: true, type: true },
+  });
+
+  if (!category) return null;
+  if (tipoTransacao && category.type !== tipoTransacao) return null;
+  return category.id;
+}
+
 function formatMonthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
@@ -485,13 +528,19 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
 router.post("/transactions", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req as any).companyId;
-    const { date, description, amount, type, notes, counterpartyId, counterpartyName, dueDate, paymentDate, receiptDate, documentNumber, categoryId } = req.body;
+    const { date, description, amount, type, notes, counterpartyId, counterpartyName, dueDate, paymentDate, receiptDate, documentNumber, categoryId, categoryCode } = req.body;
 
     if (!date || !description || !amount || !type) {
       return res.status(400).json({ success: false, error: "Campos obrigatórios: date, description, amount, type" });
     }
 
     const tipo_transacao = (type === "INCOME" || type === "ENTRADA") ? "INCOME" : "EXPENSE";
+    const resolvedCategoryId = await resolveCategoryId({
+      companyId,
+      categoryId,
+      categoryCode,
+      tipoTransacao: tipo_transacao,
+    });
 
     // Status derivado de paymentDate/receiptDate
     let status = "PENDING";
@@ -537,7 +586,7 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
         status: status as any,
         source: "MANUAL",
         counterpartyId: resolvedCounterpartyId,
-        categoryId: categoryId || null,
+        categoryId: resolvedCategoryId,
         notes: notes || "",
       },
     });
@@ -562,7 +611,7 @@ router.post("/transactions", authMiddleware, async (req: Request, res: Response,
     }
 
     // Classificação de categoria por IA em background (se não veio categoryId do frontend)
-    if (!categoryId) {
+    if (!resolvedCategoryId) {
       classifyManualTransaction(transaction.id, companyId, userId, description, Math.abs(parseFloat(amount)), tipo_transacao)
         .catch(err => console.error('[Financial] Erro na classificação IA da transação manual:', err));
     }
@@ -611,7 +660,7 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
     }
 
     const {
-      date, description, amount, notes, counterpartyId, categoryId,
+      date, description, amount, notes, counterpartyId, categoryId, categoryCode,
       dueDate, paymentDate, receiptDate,
       amountPaid, amountReceived, discount, interest,
       documentNumber, bankReference, reconciliationNotes,
@@ -624,7 +673,14 @@ router.patch("/transactions/:id", authMiddleware, async (req: Request, res: Resp
     if (amount !== undefined) txUpdateData.amount = Math.abs(parseFloat(amount));
     if (notes !== undefined) txUpdateData.notes = notes;
     if (counterpartyId !== undefined) txUpdateData.counterpartyId = counterpartyId || null;
-    if (categoryId !== undefined) txUpdateData.categoryId = categoryId || null;
+    if (categoryId !== undefined || categoryCode !== undefined) {
+      txUpdateData.categoryId = await resolveCategoryId({
+        companyId,
+        categoryId,
+        categoryCode,
+        tipoTransacao: transaction.tipo_transacao,
+      });
+    }
 
     // Status derivado: se paymentDate/receiptDate preenchido = COMPLETED, senão = PENDING
     if (paymentDate !== undefined || receiptDate !== undefined) {
