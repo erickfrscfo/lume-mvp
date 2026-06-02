@@ -357,6 +357,13 @@ CORS_ORIGIN="http://localhost:5173"
 
 ## 📝 Changelog
 
+### 2026-06-02 — Correção OCR de categoria fiscal
+
+- O prompt de OCR passou a receber o plano de contas real da empresa e solicitar `categoria_codigo` além de `categoria_sugerida`.
+- `/api/ocr/extract` agora prioriza match por código da categoria e normaliza `categoria_match` com `id`, `code` e `name`.
+- `/api/ocr/confirm/:documentId` passou a aceitar `categoryId` e `categoryCode`, resolvendo para a categoria global válida antes de criar a transação.
+- O fluxo mantém fallback por nome para compatibilidade com respostas antigas, mas deixa de depender apenas de texto livre da IA.
+
 ### 2026-06-02 — Correções funcionais
 
 - `/api/categories` passou a resolver o plano de contas da empresa, incluindo categorias customizadas.

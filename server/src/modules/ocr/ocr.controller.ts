@@ -10,7 +10,7 @@ import { promisify } from "util";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { resolveCompanyCategories } from "../../shared/resolve-categories.js";
+import { formatCategoriesForPrompt, resolveCompanyCategories } from "../../shared/resolve-categories.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -60,7 +60,7 @@ const openai = new OpenAI({
 // ============================================
 // PROMPT DE EXTRAÇÃO OCR (dinâmico) — agora inclui categoria e tipo_custo
 // ============================================
-function buildExtractionPrompt(tipoTransacao: string): string {
+function buildExtractionPrompt(tipoTransacao: string, categoriesForPrompt: string): string {
   const tipoLabel = tipoTransacao === "INCOME"
     ? "RECEITA (entrada de dinheiro)"
     : "DESPESA (saída de dinheiro)";
@@ -90,6 +90,7 @@ Antes de extrair, identifique o tipo:
   "descricao": "descrição clara e específica do documento",
   "referencia": "número da NF, nº da fatura, nº do boleto ou referência" ou null,
   "categoria_sugerida": "nome da categoria contábil mais adequada",
+  "categoria_codigo": "código exato da categoria no plano de contas" ou null,
   "tipo_custo": "FIXO" | "VARIAVEL" | null,
   "itens": [
     { "descricao": "descrição do item/serviço", "valor": 0.00 }
@@ -132,7 +133,10 @@ Antes de extrair, identifique o tipo:
 - Inclua o tipo de serviço/produto e período de referência quando disponível
 
 ### Categoria e Tipo de Custo
-- categoria_sugerida: sugira a categoria contábil mais adequada (ex: "Telecomunicações", "Energia Elétrica", "Despesas com Pessoal", "Prestação de Serviços", "Receita de Vendas", etc.)
+Use EXCLUSIVAMENTE o plano de contas abaixo para categorizar. Escolha uma categoria do mesmo tipo_transacao informado pelo usuário.
+${categoriesForPrompt}
+- categoria_codigo: retorne o código exato da categoria escolhida no plano de contas acima (ex: "5.3"). Se nenhuma categoria for adequada, use null.
+- categoria_sugerida: retorne o nome exato da categoria escolhida. Se nenhuma categoria for adequada, use null.
 - tipo_custo: para DESPESAS, classifique como "FIXO" (aluguel, salários, assinaturas, contas de consumo recorrentes) ou "VARIAVEL" (comissões, matéria-prima, frete, marketing). Para RECEITAS, use null.
 
 ### Tipo de Documento
@@ -293,10 +297,55 @@ async function findCategoryByName(companyId: string, name: string, type: string)
   return { id: globalCategory?.id || `custom:${match.code}`, name: match.name, code: match.code };
 }
 
+async function findCategoryByCode(companyId: string, code: string, type: string): Promise<{ id: string; name: string; code: string } | null> {
+  if (!code) return null;
+  const categories = await resolveCompanyCategories(companyId);
+  const normalizedCode = code.trim();
+  const match = categories.find((cat) =>
+    cat.type === type && cat.code === normalizedCode
+  );
+
+  if (!match) return null;
+
+  const globalCategory = await prisma.category.findFirst({
+    where: { code: match.code, type: type as any },
+    select: { id: true },
+  });
+
+  return { id: globalCategory?.id || `custom:${match.code}`, name: match.name, code: match.code };
+}
+
 async function resolveCategoryIdByName(companyId: string, name: string, type: string): Promise<string | null> {
   const match = await findCategoryByName(companyId, name, type);
   if (!match || match.id.startsWith("custom:")) return null;
   return match.id;
+}
+
+async function resolveCategoryIdFromPayload(
+  companyId: string,
+  type: string,
+  categoryId?: string | null,
+  categoryCode?: string | null,
+  categoryName?: string | null,
+): Promise<string | null> {
+  if (categoryId && !categoryId.startsWith("custom:")) {
+    const category = await prisma.category.findFirst({
+      where: { id: categoryId, type: type as any },
+      select: { id: true },
+    });
+    if (category) return category.id;
+  }
+
+  if (categoryCode) {
+    const match = await findCategoryByCode(companyId, categoryCode, type);
+    if (match && !match.id.startsWith("custom:")) return match.id;
+  }
+
+  if (categoryName) {
+    return resolveCategoryIdByName(companyId, categoryName, type);
+  }
+
+  return null;
 }
 
 // ============================================
@@ -333,6 +382,10 @@ router.post(
       // Montar conteúdo do arquivo para a API (suporta PDF e imagens)
       console.log(`[OCR] Processando arquivo: ${file.originalname} (${file.mimetype}, ${(file.size / 1024).toFixed(1)}KB) | Company: ${companyId}`);
       const fileContents = await buildFileContent(file);
+      const companyCategories = await resolveCompanyCategories(companyId);
+      const categoriesForPrompt = formatCategoriesForPrompt(
+        companyCategories.filter((category) => category.type === tipoTransacao)
+      );
 
       // Chamar GPT-4o com prompt dinâmico
       const completion = await openai.chat.completions.create({
@@ -341,7 +394,7 @@ router.post(
           {
             role: "user",
             content: [
-              { type: "text", text: buildExtractionPrompt(tipoTransacao) },
+              { type: "text", text: buildExtractionPrompt(tipoTransacao, categoriesForPrompt) },
               ...fileContents,
             ],
           },
@@ -376,10 +429,21 @@ router.post(
 
       // Tentar auto-match de categoria
       let categoriaSugerida = extractedData.categoria_sugerida || null;
+      let categoriaCodigo = extractedData.categoria_codigo || null;
       let categoriaMatch = null;
-      if (categoriaSugerida) {
+      if (categoriaCodigo) {
+        categoriaMatch = await findCategoryByCode(companyId, categoriaCodigo, tipoTransacao);
+      }
+      if (!categoriaMatch && categoriaSugerida) {
         categoriaMatch = await findCategoryByName(companyId, categoriaSugerida, tipoTransacao);
       }
+      if (categoriaMatch) {
+        categoriaSugerida = categoriaMatch.name;
+        categoriaCodigo = categoriaMatch.code;
+      }
+      extractedData.categoria_sugerida = categoriaSugerida;
+      extractedData.categoria_codigo = categoriaCodigo;
+      extractedData.categoria_match = categoriaMatch;
 
       // Salvar o documento no banco com os dados extraídos
       const document = await prisma.document.create({
@@ -417,6 +481,7 @@ router.post(
             descricao: extractedData.descricao,
             referencia: extractedData.referencia,
             categoria_sugerida: categoriaSugerida,
+            categoria_codigo: categoriaCodigo,
             categoria_match: categoriaMatch,
             tipo_custo: extractedData.tipo_custo || null,
             itens: extractedData.itens || [],
@@ -569,6 +634,8 @@ router.post(
         data,
         data_vencimento,
         categoria,
+        categoryId,
+        categoryCode,
         contraparte_nome,
         contraparte_documento,
         referencia,
@@ -628,10 +695,13 @@ router.post(
       }
 
       // Buscar categoria (se fornecida)
-      let categoryId: string | null = null;
-      if (categoria) {
-        categoryId = await resolveCategoryIdByName(companyId, categoria, tipo_transacao || "EXPENSE");
-      }
+      const resolvedCategoryId = await resolveCategoryIdFromPayload(
+        companyId,
+        tipo_transacao || "EXPENSE",
+        categoryId,
+        categoryCode,
+        categoria,
+      );
 
       // Determinar tipo_custo para despesas
       let tipoCusto: "FIXO" | "VARIAVEL" | null = null;
@@ -651,7 +721,7 @@ router.post(
           tipo_transacao: tipo_transacao || "EXPENSE",
           source: "OCR",
           status: "PENDING", // OCR nunca tem data de pagamento/recebimento, sempre PENDING
-          ...(categoryId && { categoryId }),
+          ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
           ...(counterpartyId && { counterpartyId }),
           ...(tipoCusto && { tipo_custo: tipoCusto }),
           ...(tipoCusto && { costConfidence: 0.85 }),
@@ -691,7 +761,7 @@ router.post(
         });
       }
 
-      console.log(`[OCR Confirm] Transação criada: ${transaction.id} | tipo_custo: ${tipoCusto} | categoria: ${categoryId} | vencimento: ${data_vencimento || 'N/A'}`);
+      console.log(`[OCR Confirm] Transação criada: ${transaction.id} | tipo_custo: ${tipoCusto} | categoria: ${resolvedCategoryId} | vencimento: ${data_vencimento || 'N/A'}`);
 
       // Regenerar alertas em background (não bloqueia a resposta)
       generateAlerts(companyId, userId).catch(err => console.error('[OCR Confirm] Erro ao gerar alertas:', err));
