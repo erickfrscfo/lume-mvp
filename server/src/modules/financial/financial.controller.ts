@@ -90,6 +90,18 @@ function formatMonthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function daysBetween(start: Date, end: Date): number {
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+  const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+  return Math.max(0, Math.round((endUtc - startUtc) / msPerDay));
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
 // ============================================
 // GET /api/financial/dashboard
 // REGIME DE CAIXA: apenas transações COMPLETED, agrupadas por data efetiva
@@ -230,6 +242,26 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
       .reduce((s, t) => s + Number(t.amount), 0);
     const overdueCount = overdueTransactions.length;
 
+    // ============================================
+    // PRAZOS E CICLO FINANCEIRO
+    // Calculado sobre transações concluídas dos últimos 6 meses.
+    // ============================================
+    const completedIncomes = recentTransactions.filter((t) => t.tipo_transacao === "INCOME" && t.detail?.receiptDate);
+    const completedExpenses = recentTransactions.filter((t) => t.tipo_transacao === "EXPENSE" && t.detail?.paymentDate);
+
+    const receivableDays = completedIncomes.map((t) => daysBetween(t.date, t.detail!.receiptDate!));
+    const payableDays = completedExpenses.map((t) => daysBetween(t.date, t.detail!.paymentDate!));
+    const avgDaysToReceive = average(receivableDays);
+    const avgDaysToPay = average(payableDays);
+    const cashCycleDays = avgDaysToReceive - avgDaysToPay;
+
+    const incomesWithDueDate = completedIncomes.filter((t) => t.detail?.dueDate);
+    const expensesWithDueDate = completedExpenses.filter((t) => t.detail?.dueDate);
+    const incomesOnTime = incomesWithDueDate.filter((t) => t.detail!.receiptDate! <= t.detail!.dueDate!).length;
+    const expensesOnTime = expensesWithDueDate.filter((t) => t.detail!.paymentDate! <= t.detail!.dueDate!).length;
+    const receivablesOnTimeRate = incomesWithDueDate.length > 0 ? (incomesOnTime / incomesWithDueDate.length) * 100 : 0;
+    const payablesOnTimeRate = expensesWithDueDate.length > 0 ? (expensesOnTime / expensesWithDueDate.length) * 100 : 0;
+
     res.json({
       success: true,
       data: {
@@ -247,6 +279,17 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
           overdueIncomes,
           overdueAmount: overdueExpenses + overdueIncomes,
           overdueCount,
+        },
+        terms: {
+          avgDaysToReceive,
+          avgDaysToPay,
+          cashCycleDays,
+          receivablesOnTimeRate,
+          payablesOnTimeRate,
+          receivablesCount: completedIncomes.length,
+          payablesCount: completedExpenses.length,
+          receivablesWithDueDateCount: incomesWithDueDate.length,
+          payablesWithDueDateCount: expensesWithDueDate.length,
         },
       },
     });

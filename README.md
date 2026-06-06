@@ -361,6 +361,7 @@ CORS_ORIGIN="http://localhost:5173"
 
 - `/api/financial/dashboard` passou a retornar valores vencidos separados entre despesas e receitas, além do total vencido.
 - Os valores vencidos são calculados dinamicamente por `TransactionDetail.dueDate`, `paymentDate` e `receiptDate`, evitando depender apenas do status gravado.
+- O endpoint também passou a retornar PMR, PMP, Ciclo de Caixa, percentual recebido no prazo e percentual pago no prazo, calculados pelos dados reais dos últimos 6 meses.
 
 ### 2026-06-06 — Correção de indicadores do relatório
 
