@@ -108,7 +108,7 @@ export const financialToolSchemas: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "obter_dre_mensal",
-      description: "Retorna o DRE (Demonstrativo de Resultado) completo de um mês: Receita Bruta, Custos Diretos (CMV/CSP/CPV conforme setor), Impostos, Lucro Bruto, Despesas Operacionais, Resultado Líquido, Margem Bruta e Margem Líquida. Use quando o usuário perguntar sobre margens, lucratividade, DRE ou resultado do mês.",
+      description: "Retorna o DRE (Demonstrativo de Resultado) completo de um mês: Receita Bruta, Deduções da Receita, Receita Líquida, Custos Diretos (CMV/CSP/CPV conforme setor), Lucro Bruto, Despesas Operacionais, Resultado Operacional, IRPJ/CSLL, Resultado Líquido, Margem Bruta e Margem Líquida. Use quando o usuário perguntar sobre margens, lucratividade, DRE ou resultado do mês.",
       parameters: {
         type: "object",
         properties: {
@@ -439,7 +439,8 @@ async function handleObterDREMensal(args: Record<string, any>, companyId: string
   const dreProfile = getDREProfile(company?.sector || "MISTO");
   const directCostCodes = dreProfile.directCostCodes || ["3."];
   const excludeFromDirectCost = dreProfile.excludeFromDirectCost || [];
-  const taxCodes = dreProfile.taxCodes || ["8."];
+  const taxCodes = dreProfile.taxCodes || ["8.1", "8.2", "8.3", "8.4"];
+  const incomeTaxCodes = dreProfile.incomeTaxCodes || ["8.5", "8.7"];
 
   const isDirectCost = (code: string): boolean => {
     const isDirect = directCostCodes.some((prefix: string) => code.startsWith(prefix));
@@ -449,6 +450,9 @@ async function handleObterDREMensal(args: Record<string, any>, companyId: string
 
   const isTaxCode = (code: string): boolean => {
     return taxCodes.some((prefix: string) => code.startsWith(prefix));
+  };
+  const isIncomeTaxCode = (code: string): boolean => {
+    return incomeTaxCodes.some((prefix: string) => code.startsWith(prefix));
   };
 
   const allTx = await prisma.transaction.findMany({
@@ -489,16 +493,22 @@ async function handleObterDREMensal(args: Record<string, any>, companyId: string
     .filter(([k]) => isTaxCode(k))
     .reduce((sum, [, v]) => sum + v, 0);
 
+  const incomeTaxes = Object.entries(byCatCode)
+    .filter(([k]) => isIncomeTaxCode(k))
+    .reduce((sum, [, v]) => sum + v, 0);
+
   const opex = Object.entries(byCatCode)
     .filter(([k]) => {
       const prefix = k.split(".")[0];
       if (!["3", "4", "5", "6", "7", "8", "9"].includes(prefix)) return false;
-      return !isDirectCost(k) && !isTaxCode(k);
+      return !isDirectCost(k) && !isTaxCode(k) && !isIncomeTaxCode(k);
     })
     .reduce((sum, [, v]) => sum + v, 0);
 
-  const lucroBruto = receita - custosDiretos - impostos;
-  const resultadoLiquido = lucroBruto - opex;
+  const receitaLiquida = receita - impostos;
+  const lucroBruto = receitaLiquida - custosDiretos;
+  const resultadoOperacional = lucroBruto - opex;
+  const resultadoLiquido = resultadoOperacional - incomeTaxes;
   const margemBruta = receita > 0 ? (lucroBruto / receita) * 100 : 0;
   const margemLiquida = receita > 0 ? (resultadoLiquido / receita) * 100 : 0;
 
@@ -507,16 +517,19 @@ async function handleObterDREMensal(args: Record<string, any>, companyId: string
     setor: company?.sector || "MISTO",
     dre: {
       receita_bruta: formatBRL(receita),
+      deducoes_receita: formatBRL(impostos),
+      receita_liquida: formatBRL(receitaLiquida),
       custos_diretos: formatBRL(custosDiretos),
       label_custos_diretos: dreProfile.directCostLabel,
-      impostos_tributos: formatBRL(impostos),
       lucro_bruto: formatBRL(lucroBruto),
       despesas_operacionais: formatBRL(opex),
+      resultado_operacional: formatBRL(resultadoOperacional),
+      irpj_csll: formatBRL(incomeTaxes),
       resultado_liquido: formatBRL(resultadoLiquido),
       margem_bruta: `${margemBruta.toFixed(1)}%`,
       margem_liquida: `${margemLiquida.toFixed(1)}%`,
     },
-    nota: "Margem Bruta = (Receita - Custos Diretos - Impostos) / Receita. Margem Líquida = (Lucro Bruto - Opex) / Receita.",
+    nota: "Margem Bruta = (Receita Líquida - Custos Diretos) / Receita Bruta. IRPJ/CSLL não reduz o Lucro Bruto; entra após Resultado Operacional para chegar ao Resultado Líquido.",
   });
 }
 

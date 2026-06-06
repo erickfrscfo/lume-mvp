@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../../shared/database.js";
 import { authMiddleware } from "../auth/auth.middleware.js";
-import { getDREProfile, isDirectCost } from "../../shared/dre-profiles.js";
+import { getDREProfile, isDirectCost, isTax } from "../../shared/dre-profiles.js";
 
 const router = Router();
 router.use(authMiddleware);
@@ -247,7 +247,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
         // Classificar por grupo DRE usando perfil dinâmico
         if (isDirectCost(categoryCode, dreProfile)) {
           data.cmv += amount;
-        } else if (categoryCode.startsWith("8.")) {
+        } else if (isTax(categoryCode, dreProfile)) {
           data.taxes += amount;
         } else if (tipoCusto === "FIXO") {
           data.fixed += amount;

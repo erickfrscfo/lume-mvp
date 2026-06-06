@@ -479,10 +479,14 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
   // ============================================
   // Helper: Calcular margens DRE de um mês (mesma lógica do frontend)
   // ============================================
-  // Helper: verifica se um código é imposto/tributo (deduzido da receita bruta)
-  const taxCodes = dreProfile.taxCodes || ["8."];
+  // Helper: separa deduções da receita de impostos sobre o resultado
+  const taxCodes = dreProfile.taxCodes || ["8.1", "8.2", "8.3", "8.4"];
+  const incomeTaxCodes = dreProfile.incomeTaxCodes || ["8.5", "8.7"];
   const isTaxCode = (code: string): boolean => {
     return taxCodes.some((prefix: string) => code.startsWith(prefix));
+  };
+  const isIncomeTaxCode = (code: string): boolean => {
+    return incomeTaxCodes.some((prefix: string) => code.startsWith(prefix));
   };
 
   function calcDREMargins(monthData: { byCatCode: Record<string, number> }) {
@@ -495,29 +499,35 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     const cmv = Object.entries(codes)
       .filter(([k]) => isDirectCost(k))
       .reduce((sum, [, v]) => sum + v, 0);
-    // Impostos e Tributos (8.x — deduzidos da receita bruta)
+    // Deduções da Receita / Impostos sobre Faturamento
     const impostos = Object.entries(codes)
       .filter(([k]) => isTaxCode(k))
       .reduce((sum, [, v]) => sum + v, 0);
-    // Despesas Operacionais = 3.x a 9.x que NÃO são custo direto E NÃO são impostos
+    // IRPJ/CSLL e outros tributos sobre resultado
+    const incomeTaxes = Object.entries(codes)
+      .filter(([k]) => isIncomeTaxCode(k))
+      .reduce((sum, [, v]) => sum + v, 0);
+    // Despesas Operacionais = 3.x a 9.x que NÃO são custo direto, deduções da receita ou IRPJ/CSLL
     const opex = Object.entries(codes)
       .filter(([k]) => {
         const prefix = k.split(".")[0];
         if (!["3", "4", "5", "6", "7", "8", "9"].includes(prefix)) return false;
-        return !isDirectCost(k) && !isTaxCode(k);
+        return !isDirectCost(k) && !isTaxCode(k) && !isIncomeTaxCode(k);
       })
       .reduce((sum, [, v]) => sum + v, 0);
-    // NOVA ESTRUTURA DRE:
-    // Receita Bruta - Custos Diretos - Impostos = Lucro Bruto
-    // Lucro Bruto - Opex = Resultado Líquido
-    const lucroBruto = receita - cmv - impostos;
-    const lucroLiquido = receita - cmv - impostos - opex;
+    const receitaLiquida = receita - impostos;
+    const lucroBruto = receitaLiquida - cmv;
+    const resultadoOperacional = lucroBruto - opex;
+    const lucroLiquido = resultadoOperacional - incomeTaxes;
     return {
       receita,
+      receitaLiquida,
       cmv,
       impostos,
+      incomeTaxes,
       opex,
       lucroBruto,
+      resultadoOperacional,
       lucroLiquido,
       margemBruta: receita > 0 ? (lucroBruto / receita) * 100 : 0,
       margemLiquida: receita > 0 ? (lucroLiquido / receita) * 100 : 0,
@@ -587,8 +597,8 @@ async function getEnrichedFinancialContext(companyId: string, extraContext?: str
     detail += `\n    Despesa Total: R$ ${d.expense.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     detail += `\n    Líquido: R$ ${net.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     detail += `\n    Saldo Acumulado: R$ ${accumulatedBalance.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    detail += `\n    Margem Bruta: ${margemBrutaMes}% (Receita DRE: R$ ${dreMes.receita.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} - ${dreProfile.directCostLabel}: R$ ${dreMes.cmv.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} - Impostos: R$ ${dreMes.impostos.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})`;
-    detail += `\n    Margem Líquida: ${margemLiquidaMes}% (Lucro Bruto - Opex: R$ ${dreMes.opex.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})`;
+    detail += `\n    Margem Bruta: ${margemBrutaMes}% (Receita Líquida: R$ ${dreMes.receitaLiquida.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} - ${dreProfile.directCostLabel}: R$ ${dreMes.cmv.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})`;
+    detail += `\n    Margem Líquida: ${margemLiquidaMes}% (Resultado Operacional: R$ ${dreMes.resultadoOperacional.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} - IRPJ/CSLL: R$ ${dreMes.incomeTaxes.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})`;
     if (topIncomes) {
       detail += `\n    Receitas por categoria:`;
       detail += `\n${topIncomes}`;
@@ -667,11 +677,12 @@ IMPORTANTE: Todos os dados abaixo seguem o REGIME DE CAIXA.
 - Lucro Bruto Atual: R$ ${currentGrossProfit.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastGrossProfit.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Variação do Lucro Bruto: ${grossProfitChange > 0 ? "+" : ""}${grossProfitChange.toFixed(1)}%
 - ${dreProfile.directCostLabel} Atual: R$ ${currentDRE.cmv.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastDRE.cmv.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-- Impostos e Tributos Atual: R$ ${currentDRE.impostos.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastDRE.impostos.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- Deduções da Receita Atual: R$ ${currentDRE.impostos.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastDRE.impostos.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Despesas Operacionais Atual: R$ ${currentDRE.opex.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastDRE.opex.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+- IRPJ/CSLL Atual: R$ ${currentDRE.incomeTaxes.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Anterior: R$ ${lastDRE.incomeTaxes.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Margem Bruta Atual: ${currentDRE.margemBruta.toFixed(1)}% | Margem Bruta Anterior: ${lastDRE.margemBruta.toFixed(1)}%
 - Margem Líquida Atual: ${currentDRE.margemLiquida.toFixed(1)}% | Margem Líquida Anterior: ${lastDRE.margemLiquida.toFixed(1)}%
-- IMPORTANTE: Margem Bruta = (Receita Bruta - ${dreProfile.directCostLabel} - Impostos) / Receita. Margem Líquida = (Lucro Bruto - Opex) / Receita. NÃO confunda as duas.
+- IMPORTANTE: Margem Bruta = (Receita Líquida - ${dreProfile.directCostLabel}) / Receita Bruta. IRPJ/CSLL NÃO reduz Lucro Bruto; entra após Resultado Operacional para chegar ao Resultado Líquido.
 - Saldo Acumulado Atual: R$ ${(monthlyBalances[currentMonthKey] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Saldo Acumulado Anterior: R$ ${(monthlyBalances[lastMonthKey] || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 
 === EVOLUÇÃO MENSAL DETALHADA (regime de caixa, com categorias e saldo acumulado) ===

@@ -1,15 +1,19 @@
 // ============================================
 // DRE PROFILES — Perfis de DRE por Setor
 // Define quais categorias compõem o "Custo Direto",
-// quais são "Impostos" (deduzidos da receita bruta),
+// quais são deduções da receita,
+// quais são impostos sobre o resultado,
 // e qual nomenclatura usar na interface.
 //
 // ESTRUTURA DO DRE:
 //   Receita Bruta (1.x + 2.x)
+//   (-) Deduções da Receita / Impostos sobre Faturamento
+//   = Receita Líquida
 //   (-) Custos Diretos / CSP / CMV / CPV (conforme directCostCodes)
-//   (-) Impostos e Tributos (conforme taxCodes)
 //   = Lucro Bruto
 //   (-) Despesas Operacionais (4.x + 5.x + 6.x + 7.x + 9.x, exceto directCost)
+//   = Resultado Operacional
+//   (-) IRPJ/CSLL e outros tributos sobre resultado
 //   = Resultado Líquido
 // ============================================
 
@@ -27,9 +31,15 @@ export interface DREProfile {
   // Quais prefixos excluir do custo direto (mesmo se match em directCostCodes)
   excludeFromDirectCost: string[];
 
-  // Quais prefixos de código são Impostos/Tributos (deduzidos da receita bruta)
+  // Quais prefixos de código são deduções da receita (impostos sobre faturamento)
   taxCodes: string[];
+
+  // Quais prefixos de código são impostos sobre resultado, deduzidos após resultado operacional
+  incomeTaxCodes: string[];
 }
+
+const REVENUE_DEDUCTION_TAX_CODES = ["8.1", "8.2", "8.3", "8.4"];
+const INCOME_TAX_CODES = ["8.5", "8.7"];
 
 export const DRE_PROFILES: Record<string, DREProfile> = {
   // ============================================
@@ -43,7 +53,8 @@ export const DRE_PROFILES: Record<string, DREProfile> = {
     grossProfitLabel: "Lucro Bruto",
     directCostCodes: ["3."],
     excludeFromDirectCost: [],
-    taxCodes: ["8."],
+    taxCodes: REVENUE_DEDUCTION_TAX_CODES,
+    incomeTaxCodes: INCOME_TAX_CODES,
   },
 
   // ============================================
@@ -62,7 +73,8 @@ export const DRE_PROFILES: Record<string, DREProfile> = {
       "4.4",  // Prestadores PJ (freelancers)
     ],
     excludeFromDirectCost: [],
-    taxCodes: ["8."],
+    taxCodes: REVENUE_DEDUCTION_TAX_CODES,
+    incomeTaxCodes: INCOME_TAX_CODES,
   },
 
   // ============================================
@@ -76,7 +88,8 @@ export const DRE_PROFILES: Record<string, DREProfile> = {
     grossProfitLabel: "Lucro Bruto",
     directCostCodes: ["3."],
     excludeFromDirectCost: [],
-    taxCodes: ["8."],
+    taxCodes: REVENUE_DEDUCTION_TAX_CODES,
+    incomeTaxCodes: INCOME_TAX_CODES,
   },
 
   // ============================================
@@ -94,7 +107,8 @@ export const DRE_PROFILES: Record<string, DREProfile> = {
       "5.4",  // Software e Assinaturas (infra: AWS, Azure, etc.)
     ],
     excludeFromDirectCost: [],
-    taxCodes: ["8."],
+    taxCodes: REVENUE_DEDUCTION_TAX_CODES,
+    incomeTaxCodes: INCOME_TAX_CODES,
   },
 
   // ============================================
@@ -111,7 +125,8 @@ export const DRE_PROFILES: Record<string, DREProfile> = {
       "7.3",  // Taxas de Cartão/Maquininha (marketplace fees)
     ],
     excludeFromDirectCost: [],
-    taxCodes: ["8."],
+    taxCodes: REVENUE_DEDUCTION_TAX_CODES,
+    incomeTaxCodes: INCOME_TAX_CODES,
   },
 
   // ============================================
@@ -125,7 +140,8 @@ export const DRE_PROFILES: Record<string, DREProfile> = {
     grossProfitLabel: "Lucro Bruto",
     directCostCodes: ["3."],
     excludeFromDirectCost: [],
-    taxCodes: ["8."],
+    taxCodes: REVENUE_DEDUCTION_TAX_CODES,
+    incomeTaxCodes: INCOME_TAX_CODES,
   },
 };
 
@@ -150,11 +166,19 @@ export function isDirectCost(code: string, profile: DREProfile): boolean {
 }
 
 /**
- * Verifica se um código de categoria é "imposto/tributo" para o perfil dado.
- * Impostos são deduzidos da receita bruta no DRE (antes do Lucro Bruto).
+ * Verifica se um código de categoria é dedução da receita para o perfil dado.
+ * Exemplos: Simples/DAS, ISS, ICMS e PIS/COFINS.
  */
 export function isTax(code: string, profile: DREProfile): boolean {
   return profile.taxCodes.some((prefix) => code.startsWith(prefix));
+}
+
+/**
+ * Verifica se um código de categoria é imposto sobre resultado.
+ * Exemplos: IRPJ/CSLL.
+ */
+export function isIncomeTax(code: string, profile: DREProfile): boolean {
+  return profile.incomeTaxCodes.some((prefix) => code.startsWith(prefix));
 }
 
 /**

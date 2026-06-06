@@ -357,6 +357,13 @@ CORS_ORIGIN="http://localhost:5173"
 
 ## 📝 Changelog
 
+### 2026-06-06 — Correção DRE de impostos
+
+- Perfis de DRE passaram a separar deduções da receita (`8.1` a `8.4`) de IRPJ/CSLL e outros tributos sobre resultado (`8.5` e `8.7`).
+- Margem bruta, lucro bruto, IA financeira, forecast e relatório customizado deixaram de deduzir IRPJ/CSLL antes do Lucro Bruto.
+- `/api/financial/dre` passou a retornar `incomeTaxCodes` no perfil para o frontend montar a estrutura correta.
+- Adicionado script `server/scripts/check-dre-tax-codes.sql` para auditar transações atuais classificadas em categorias de impostos.
+
 ### 2026-06-02 — Correção OCR de categoria fiscal
 
 - O prompt de OCR passou a receber o plano de contas real da empresa e solicitar `categoria_codigo` além de `categoria_sugerida`.

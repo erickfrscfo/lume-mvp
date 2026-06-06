@@ -364,6 +364,7 @@ router.get("/dre", authMiddleware, async (req: Request, res: Response, next: Nex
         directCostCodes: profile.directCostCodes,
         excludeFromDirectCost: profile.excludeFromDirectCost,
         taxCodes: profile.taxCodes,
+        incomeTaxCodes: profile.incomeTaxCodes,
       },
     });
   } catch (error) {
