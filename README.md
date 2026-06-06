@@ -357,6 +357,12 @@ CORS_ORIGIN="http://localhost:5173"
 
 ## 📝 Changelog
 
+### 2026-06-06 — Correção de indicadores do relatório
+
+- PMR, PMP e Ciclo de Caixa deixaram de depender dos campos agregados de `Counterparty` e passaram a ser calculados dinamicamente pelas transações concluídas no mês.
+- Fornecedores com atraso passou a contar fornecedores únicos com pagamentos vencidos em aberto ou pagos depois do vencimento, usando `TransactionDetail.dueDate` e `paymentDate`.
+- A busca de transações do relatório passou a considerar `paymentDate` e `receiptDate` diretamente, evitando perda de lançamentos pagos ou recebidos muito depois da data original.
+
 ### 2026-06-06 — Correção DRE de impostos
 
 - Perfis de DRE passaram a separar deduções da receita (`8.1` a `8.4`) de IRPJ/CSLL e outros tributos sobre resultado (`8.5` e `8.7`).

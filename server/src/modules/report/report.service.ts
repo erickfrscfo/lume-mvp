@@ -147,27 +147,76 @@ function getEffectiveDate(tx: any): Date {
   }
 }
 
+function getActualSettlementDate(tx: any): Date | null {
+  if (tx.tipo_transacao === "EXPENSE") {
+    return tx.detail?.paymentDate ? new Date(tx.detail.paymentDate) : null;
+  }
+  return tx.detail?.receiptDate ? new Date(tx.detail.receiptDate) : null;
+}
+
+function daysBetween(start: Date, end: Date): number {
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+  const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+  return Math.max(0, Math.round((endUtc - startUtc) / msPerDay));
+}
+
+function getCounterpartyId(tx: any): string | null {
+  return tx.counterparty?.id || tx.counterpartyId || tx.detail?.counterpartyId || null;
+}
+
+async function getAverageSettlementDays(
+  companyId: string,
+  month: string,
+  transactionType: "INCOME" | "EXPENSE",
+) {
+  const range = parseMonth(month);
+  const transactions = await getCompletedTransactionsEffective(companyId, range);
+  const samples = transactions
+    .filter((tx) => tx.tipo_transacao === transactionType)
+    .map((tx) => {
+      const settlementDate = getActualSettlementDate(tx);
+      if (!settlementDate) return null;
+      return daysBetween(new Date(tx.date), settlementDate);
+    })
+    .filter((value): value is number => value !== null);
+
+  if (samples.length === 0) {
+    return { average: null, count: 0 };
+  }
+
+  const average = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  return { average, count: samples.length };
+}
+
 // ============================================
 // QUERIES BASE (reutilizadas por vários indicadores)
 // Todas usam data efetiva para regime de caixa.
 // ============================================
 
 /**
- * Busca todas as transações COMPLETED da empresa e filtra por data efetiva
- * dentro do range do mês. Usa busca ampla no Prisma (±6 meses) e filtra
- * em memória pela data efetiva.
+ * Busca transações COMPLETED da empresa e filtra por data efetiva dentro do
+ * range do mês. A query considera paymentDate/receiptDate diretamente para
+ * não perder transações pagas/recebidas muito depois da data original.
  */
 async function getCompletedTransactionsEffective(companyId: string, range: MonthRange) {
-  const wideStart = new Date(range.start);
-  wideStart.setUTCMonth(wideStart.getUTCMonth() - 6);
-  const wideEnd = new Date(range.end);
-  wideEnd.setUTCMonth(wideEnd.getUTCMonth() + 3);
-
   const allTx = await prisma.transaction.findMany({
     where: {
       companyId,
       status: "COMPLETED",
-      date: { gte: wideStart, lt: wideEnd },
+      OR: [
+        {
+          tipo_transacao: "EXPENSE",
+          detail: { paymentDate: { gte: range.start, lt: range.end } },
+        },
+        {
+          tipo_transacao: "INCOME",
+          detail: { receiptDate: { gte: range.start, lt: range.end } },
+        },
+        {
+          date: { gte: range.start, lt: range.end },
+        },
+      ],
     },
     include: { category: true, detail: true, counterparty: true },
   });
@@ -644,40 +693,39 @@ const calculators: Record<string, Calculator> = {
 
   // ── FORNECEDORES E CLIENTES ──
 
-  async ciclo_caixa(companyId, _month) {
+  async ciclo_caixa(companyId, month) {
     const ind = getIndicatorById("ind_ciclo_caixa")!;
-    const clientes = await prisma.counterparty.aggregate({
-      where: { companyId, type: "CLIENT", isActive: true, avgDaysToReceive: { not: null } },
-      _avg: { avgDaysToReceive: true },
-    });
-    const fornecedores = await prisma.counterparty.aggregate({
-      where: { companyId, type: "SUPPLIER", isActive: true, avgDaysToPay: { not: null } },
-      _avg: { avgDaysToPay: true },
-    });
-    const pmr = n(clientes._avg.avgDaysToReceive);
-    const pmp = n(fornecedores._avg.avgDaysToPay);
+    const [recebimentos, pagamentos] = await Promise.all([
+      getAverageSettlementDays(companyId, month, "INCOME"),
+      getAverageSettlementDays(companyId, month, "EXPENSE"),
+    ]);
+    if (recebimentos.average === null || pagamentos.average === null) {
+      return unavailable(ind, "Sem recebimentos e pagamentos concluídos com data real no mês para calcular o ciclo de caixa.");
+    }
+    const pmr = recebimentos.average;
+    const pmp = pagamentos.average;
     const ciclo = pmr - pmp;
-    return result(ind, ciclo, `O ciclo de caixa é de ${Math.round(ciclo)} dias (recebe em ${Math.round(pmr)} dias e paga em ${Math.round(pmp)} dias). ${ciclo > 0 ? "A empresa paga antes de receber, o que pressiona o caixa." : "A empresa recebe antes de pagar, o que é positivo para o caixa."}`);
+    return result(ind, ciclo, `O ciclo de caixa é de ${Math.round(ciclo)} dias (recebe em ${Math.round(pmr)} dias e paga em ${Math.round(pmp)} dias, considerando ${recebimentos.count} recebimento(s) e ${pagamentos.count} pagamento(s) concluído(s) no mês). ${ciclo > 0 ? "A empresa paga antes de receber, o que pressiona o caixa." : "A empresa recebe antes de pagar, o que é positivo para o caixa."}`);
   },
 
-  async pmr(companyId, _month) {
+  async pmr(companyId, month) {
     const ind = getIndicatorById("ind_pmr")!;
-    const result_ = await prisma.counterparty.aggregate({
-      where: { companyId, type: "CLIENT", isActive: true, avgDaysToReceive: { not: null } },
-      _avg: { avgDaysToReceive: true },
-    });
-    const pmr = n(result_._avg.avgDaysToReceive);
-    return result(ind, pmr, `Em média, seus clientes levam ${Math.round(pmr)} dias para pagar.`);
+    const recebimentos = await getAverageSettlementDays(companyId, month, "INCOME");
+    if (recebimentos.average === null) {
+      return unavailable(ind, "Sem recebimentos concluídos com data real no mês para calcular o PMR.");
+    }
+    const pmr = recebimentos.average;
+    return result(ind, pmr, `Em média, seus clientes levam ${Math.round(pmr)} dias para pagar, considerando ${recebimentos.count} recebimento(s) concluído(s) no mês.`);
   },
 
-  async pmp(companyId, _month) {
+  async pmp(companyId, month) {
     const ind = getIndicatorById("ind_pmp")!;
-    const result_ = await prisma.counterparty.aggregate({
-      where: { companyId, type: "SUPPLIER", isActive: true, avgDaysToPay: { not: null } },
-      _avg: { avgDaysToPay: true },
-    });
-    const pmp = n(result_._avg.avgDaysToPay);
-    return result(ind, pmp, `Em média, você leva ${Math.round(pmp)} dias para pagar seus fornecedores.`);
+    const pagamentos = await getAverageSettlementDays(companyId, month, "EXPENSE");
+    if (pagamentos.average === null) {
+      return unavailable(ind, "Sem pagamentos concluídos com data real no mês para calcular o PMP.");
+    }
+    const pmp = pagamentos.average;
+    return result(ind, pmp, `Em média, você leva ${Math.round(pmp)} dias para pagar seus fornecedores, considerando ${pagamentos.count} pagamento(s) concluído(s) no mês.`);
   },
 
   async maior_fornecedor(companyId, month) {
@@ -756,12 +804,39 @@ const calculators: Record<string, Calculator> = {
     return result(ind, pct, `O maior cliente representa ${formatPercent(pct)} da receita total.${alerta}`);
   },
 
-  async fornecedores_atraso(companyId, _month) {
+  async fornecedores_atraso(companyId, month) {
     const ind = getIndicatorById("ind_fornecedores_atraso")!;
-    const count = await prisma.counterparty.count({
-      where: { companyId, type: "SUPPLIER", isActive: true, latePaymentCount: { gt: 0 } },
+    const range = parseMonth(month);
+    const completedTransactions = await getCompletedTransactionsEffective(companyId, range);
+    const lateSupplierIds = new Set<string>();
+
+    completedTransactions
+      .filter((tx) => tx.tipo_transacao === "EXPENSE" && tx.detail?.dueDate && tx.detail?.paymentDate)
+      .forEach((tx) => {
+        const supplierId = getCounterpartyId(tx);
+        if (!supplierId) return;
+        const dueDate = new Date(tx.detail!.dueDate!);
+        const paymentDate = new Date(tx.detail!.paymentDate!);
+        if (paymentDate > dueDate) lateSupplierIds.add(supplierId);
+      });
+
+    const openLateTransactions = await prisma.transaction.findMany({
+      where: {
+        companyId,
+        tipo_transacao: "EXPENSE",
+        status: { in: ["PENDING", "OVERDUE"] },
+        detail: { dueDate: { lt: range.end }, paymentDate: null },
+      },
+      include: { detail: true, counterparty: true },
     });
-    return result(ind, count, `${count} fornecedor(es) tiveram pagamentos atrasados.`);
+
+    openLateTransactions.forEach((tx) => {
+      const supplierId = getCounterpartyId(tx);
+      if (supplierId) lateSupplierIds.add(supplierId);
+    });
+
+    const count = lateSupplierIds.size;
+    return result(ind, count, `${count} fornecedor(es) tiveram pagamentos atrasados ou vencidos em aberto até o fim do mês de referência.`);
   },
 
   async contrapartes_ativas(companyId, _month) {
