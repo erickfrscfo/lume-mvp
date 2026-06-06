@@ -357,6 +357,11 @@ CORS_ORIGIN="http://localhost:5173"
 
 ## 📝 Changelog
 
+### 2026-06-06 — Métricas executivas para dashboards
+
+- `/api/financial/dashboard` passou a retornar valores vencidos separados entre despesas e receitas, além do total vencido.
+- Os valores vencidos são calculados dinamicamente por `TransactionDetail.dueDate`, `paymentDate` e `receiptDate`, evitando depender apenas do status gravado.
+
 ### 2026-06-06 — Correção de indicadores do relatório
 
 - PMR, PMP e Ciclo de Caixa deixaram de depender dos campos agregados de `Counterparty` e passaram a ser calculados dinamicamente pelas transações concluídas no mês.

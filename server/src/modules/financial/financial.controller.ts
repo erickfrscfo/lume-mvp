@@ -196,7 +196,18 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
         companyId,
         status: { in: ["PENDING", "OVERDUE"] },
       },
-      select: { amount: true, tipo_transacao: true, status: true },
+      select: {
+        amount: true,
+        tipo_transacao: true,
+        status: true,
+        detail: {
+          select: {
+            dueDate: true,
+            paymentDate: true,
+            receiptDate: true,
+          },
+        },
+      },
     });
 
     const pendingExpenses = pendingTransactions
@@ -205,7 +216,19 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
     const pendingIncomes = pendingTransactions
       .filter((t) => t.tipo_transacao === "INCOME")
       .reduce((s, t) => s + Number(t.amount), 0);
-    const overdueCount = pendingTransactions.filter((t) => t.status === "OVERDUE").length;
+    const overdueTransactions = pendingTransactions.filter((t) => {
+      if (!t.detail?.dueDate) return t.status === "OVERDUE";
+      const isExpenseOpen = t.tipo_transacao === "EXPENSE" && !t.detail.paymentDate;
+      const isIncomeOpen = t.tipo_transacao === "INCOME" && !t.detail.receiptDate;
+      return t.detail.dueDate < now && (isExpenseOpen || isIncomeOpen);
+    });
+    const overdueExpenses = overdueTransactions
+      .filter((t) => t.tipo_transacao === "EXPENSE")
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const overdueIncomes = overdueTransactions
+      .filter((t) => t.tipo_transacao === "INCOME")
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const overdueCount = overdueTransactions.length;
 
     res.json({
       success: true,
@@ -220,6 +243,9 @@ router.get("/dashboard", authMiddleware, async (req: Request, res: Response, nex
           count: pendingTransactions.length,
           totalExpenses: pendingExpenses,
           totalIncomes: pendingIncomes,
+          overdueExpenses,
+          overdueIncomes,
+          overdueAmount: overdueExpenses + overdueIncomes,
           overdueCount,
         },
       },
