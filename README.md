@@ -363,6 +363,7 @@ CORS_ORIGIN="http://localhost:5173"
 - OCR passou a extrair impostos e retenções de NF/DANFE em estrutura própria, incluindo tipo, base, alíquota, valor e indicador de retenção.
 - `FinancialObligation` recebeu campos para armazenar esses termos sem confundir condições previstas no documento com juros/multas efetivamente pagos.
 - `/api/financial/transactions` passou a retornar a obrigação financeira vinculada à transação, incluindo condições de cobrança, impostos e retenções.
+- Confirmação OCR agora recria a transação quando encontra uma obrigação existente que ficou sem transação vinculada após exclusão manual no frontend.
 - Adicionada migration `20260607120000_add_obligation_financial_terms`; aplique a migration e regenere o Prisma Client antes de validar o fluxo em ambiente novo.
 
 ### 2026-06-06 — Camada de obrigação financeira para OCR stand alone

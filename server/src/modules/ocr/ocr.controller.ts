@@ -983,7 +983,7 @@ router.post(
 
       let transactionId: string | null = null;
       let obligationId: string | null = null;
-      let action: "CREATED" | "LINKED" | "PAID_LINKED" = "CREATED";
+      let action: "CREATED" | "LINKED" | "PAID_LINKED" | "RECREATED" = "CREATED";
 
       if (match) {
         const obligation = match.obligation;
@@ -1051,6 +1051,38 @@ router.post(
               ...(referencia && { documentNumber: referencia }),
               ...(counterpartyId && { counterpartyId }),
               ...(docRole === "PAYMENT_PROOF" && { reconciliationStatus: "RECONCILED" }),
+              ...(docRole === "PAYMENT_PROOF" && normalizedTipoTransacao === "EXPENSE" && { paymentDate: issueDate || new Date(), amountPaid: amount }),
+              ...(docRole === "PAYMENT_PROOF" && normalizedTipoTransacao === "INCOME" && { receiptDate: issueDate || new Date(), amountReceived: amount }),
+            },
+          });
+        } else {
+          const transaction = await prisma.transaction.create({
+            data: {
+              companyId,
+              date: issueDate || new Date(),
+              description: descricao || obligation.description || "Transação via documento",
+              amount,
+              tipo_transacao: normalizedTipoTransacao,
+              source: "OCR",
+              status: docRole === "PAYMENT_PROOF" ? "COMPLETED" : "PENDING",
+              documentId: document.id,
+              obligationId: obligation.id,
+              ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
+              ...(counterpartyId && { counterpartyId }),
+              ...(tipoCusto && { tipo_custo: tipoCusto, costConfidence: 0.85 }),
+            } as any,
+          });
+          transactionId = transaction.id;
+          action = docRole === "PAYMENT_PROOF" ? "PAID_LINKED" : "RECREATED";
+
+          await prisma.transactionDetail.create({
+            data: {
+              transactionId: transaction.id,
+              dueDate,
+              amountOriginal: amount,
+              documentNumber: referencia || obligation.documentNumber || null,
+              reconciliationStatus: docRole === "PAYMENT_PROOF" ? "RECONCILED" : "PENDING",
+              ...(counterpartyId && { counterpartyId }),
               ...(docRole === "PAYMENT_PROOF" && normalizedTipoTransacao === "EXPENSE" && { paymentDate: issueDate || new Date(), amountPaid: amount }),
               ...(docRole === "PAYMENT_PROOF" && normalizedTipoTransacao === "INCOME" && { receiptDate: issueDate || new Date(), amountReceived: amount }),
             },
@@ -1158,6 +1190,8 @@ router.post(
           documentRole: docRole,
           message: action === "CREATED"
             ? "Obrigação financeira e transação criadas com sucesso a partir do documento."
+            : action === "RECREATED"
+              ? "Documento vinculado à obrigação existente e transação recriada com sucesso."
             : action === "PAID_LINKED"
               ? "Documento vinculado à obrigação existente e pagamento marcado como concluído."
               : "Documento vinculado à obrigação financeira existente. Nenhuma transação duplicada foi criada.",
