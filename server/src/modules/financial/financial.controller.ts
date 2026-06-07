@@ -8,6 +8,7 @@ import * as aiService from "../ai/ai.service.js";
 import { z } from "zod";
 
 const router = Router();
+const prismaDynamic = prisma as any;
 
 // ============================================
 // HELPER: Parsear data sem problema de timezone
@@ -530,12 +531,32 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
     }
 
     const [transactions, total] = await Promise.all([
-      prisma.transaction.findMany({
+      prismaDynamic.transaction.findMany({
         where,
         include: {
           category: true,
           counterparty: { select: { id: true, name: true, document: true, type: true } },
           detail: true,
+          obligation: {
+            select: {
+              id: true,
+              type: true,
+              status: true,
+              source: true,
+              documentNumber: true,
+              barcode: true,
+              earlyDiscountAmount: true,
+              earlyDiscountPercent: true,
+              earlyDiscountValidUntil: true,
+              lateFeeAmount: true,
+              lateFeePercent: true,
+              lateInterestPercentPerDay: true,
+              paymentLimitDate: true,
+              taxDetails: true,
+              totalTaxAmount: true,
+              totalWithholdingAmount: true,
+            },
+          },
         },
         orderBy: { date: "desc" },
         skip: (page - 1) * limit,
@@ -546,7 +567,7 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
 
     res.json({
       success: true,
-      data: transactions.map((t) => ({
+      data: transactions.map((t: any) => ({
         id: t.id,
         date: t.date,
         description: t.description,
@@ -576,6 +597,24 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
           bankReference: t.detail.bankReference,
           reconciliationStatus: t.detail.reconciliationStatus,
           notes: t.detail.notes,
+        } : null,
+        obligation: t.obligation ? {
+          id: t.obligation.id,
+          type: t.obligation.type,
+          status: t.obligation.status,
+          source: t.obligation.source,
+          documentNumber: t.obligation.documentNumber,
+          barcode: t.obligation.barcode,
+          earlyDiscountAmount: t.obligation.earlyDiscountAmount ? Number(t.obligation.earlyDiscountAmount) : null,
+          earlyDiscountPercent: t.obligation.earlyDiscountPercent ? Number(t.obligation.earlyDiscountPercent) : null,
+          earlyDiscountValidUntil: t.obligation.earlyDiscountValidUntil,
+          lateFeeAmount: t.obligation.lateFeeAmount ? Number(t.obligation.lateFeeAmount) : null,
+          lateFeePercent: t.obligation.lateFeePercent ? Number(t.obligation.lateFeePercent) : null,
+          lateInterestPercentPerDay: t.obligation.lateInterestPercentPerDay ? Number(t.obligation.lateInterestPercentPerDay) : null,
+          paymentLimitDate: t.obligation.paymentLimitDate,
+          taxDetails: t.obligation.taxDetails || [],
+          totalTaxAmount: t.obligation.totalTaxAmount ? Number(t.obligation.totalTaxAmount) : null,
+          totalWithholdingAmount: t.obligation.totalWithholdingAmount ? Number(t.obligation.totalWithholdingAmount) : null,
         } : null,
         aiClassified: t.aiClassified,
         confidence: t.confidence ? Number(t.confidence) : null,

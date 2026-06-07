@@ -88,6 +88,27 @@ Antes de extrair, identifique o tipo:
   "valor_total": 0.00,
   "data_emissao": "YYYY-MM-DD" ou null,
   "data_vencimento": "YYYY-MM-DD" ou null,
+  "linha_digitavel": "linha digitável do boleto/fatura" ou null,
+  "codigo_barras": "código de barras numérico" ou null,
+  "multa_atraso_percentual": 0.00 ou null,
+  "multa_atraso_valor": 0.00 ou null,
+  "juros_mora_percentual_dia": 0.000 ou null,
+  "juros_mora_valor": 0.00 ou null,
+  "desconto_antecipacao_valor": 0.00 ou null,
+  "desconto_antecipacao_percentual": 0.00 ou null,
+  "desconto_antecipacao_validade": "YYYY-MM-DD" ou null,
+  "data_limite_pagamento": "YYYY-MM-DD" ou null,
+  "impostos": [
+    {
+      "tipo": "ICMS" | "ISS" | "IPI" | "PIS" | "COFINS" | "IRRF" | "CSLL" | "INSS" | "OUTRO",
+      "base": 0.00 ou null,
+      "aliquota_percentual": 0.00 ou null,
+      "valor": 0.00,
+      "retido": true | false
+    }
+  ],
+  "valor_impostos_total": 0.00 ou null,
+  "valor_retencoes_total": 0.00 ou null,
   "tipo_transacao": "${tipoTransacao}",
   "descricao": "descrição clara e específica do documento",
   "referencia": "número da NF, nº da fatura, nº do boleto ou referência" ou null,
@@ -129,6 +150,22 @@ Antes de extrair, identifique o tipo:
 ### Referência
 - Em BOLETOS: "Nº da Fatura", "Nosso Número", "Nº do Documento"
 - Em NFs: "Número da Nota", "Nº NF"
+
+### Condições financeiras de cobrança
+- Em boletos/faturas, extraia linha_digitavel e/ou codigo_barras quando houver.
+- Extraia multa por atraso como multa_atraso_percentual quando estiver em percentual e multa_atraso_valor quando estiver em valor.
+- Extraia juros de mora como juros_mora_percentual_dia quando estiver em percentual ao dia e juros_mora_valor quando estiver em valor.
+- Extraia descontos por antecipação e validade quando houver.
+- Se houver instrução "não receber após X dias" ou data limite explícita, calcule/retorne data_limite_pagamento em YYYY-MM-DD quando possível.
+- Não trate multa/juros do boleto como valor já pago; são condições da obrigação financeira.
+
+### Impostos e retenções
+- Em NF-e/NFS-e/DANFE, extraia impostos destacados: ICMS, ISS, IPI, PIS, COFINS, IRRF, CSLL, INSS e outros quando visíveis.
+- Para cada imposto, preencha tipo, base, aliquota_percentual, valor e retido.
+- Marque retido=true para campos descritos como "retido", "retenção", "retido na fonte" ou equivalentes.
+- valor_impostos_total deve somar impostos destacados não retidos quando o total estiver claro.
+- valor_retencoes_total deve somar apenas tributos retidos/retenções.
+- Se não houver informação tributária explícita, use impostos=[] e totais null.
 
 ### Descrição
 - Seja ESPECÍFICO: em vez de "Resumo da conta", use "Fatura Vivo Casa Conectada - Fibra 500 Mbps - Ref. 02/2026"
@@ -230,6 +267,89 @@ function parseAmount(value: any): number {
     .replace(/\.(?=\d{3}(?:\D|$))/g, "")
     .replace(",", ".");
   return Math.abs(parseFloat(normalized) || 0);
+}
+
+function parseOptionalAmount(value: any): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = parseAmount(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parsePercent(value: any): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? Math.abs(value) : null;
+  const normalized = String(value)
+    .replace("%", "")
+    .replace(/[^\d,.-]/g, "")
+    .replace(/\.(?=\d{3}(?:\D|$))/g, "")
+    .replace(",", ".");
+  const parsed = parseFloat(normalized);
+  return Number.isFinite(parsed) ? Math.abs(parsed) : null;
+}
+
+function parseOptionalLocalDate(value: any): Date | null {
+  if (!value) return null;
+  return parseLocalDate(value);
+}
+
+function normalizeTaxDetails(value: any): Array<{
+  tipo: string;
+  base: number | null;
+  aliquota_percentual: number | null;
+  valor: number;
+  retido: boolean;
+}> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((tax) => {
+      const valor = parseOptionalAmount(tax?.valor);
+      if (!valor) return null;
+      return {
+        tipo: String(tax?.tipo || "OUTRO").toUpperCase(),
+        base: parseOptionalAmount(tax?.base),
+        aliquota_percentual: parsePercent(tax?.aliquota_percentual),
+        valor,
+        retido: Boolean(tax?.retido),
+      };
+    })
+    .filter(Boolean) as Array<{
+      tipo: string;
+      base: number | null;
+      aliquota_percentual: number | null;
+      valor: number;
+      retido: boolean;
+    }>;
+}
+
+function buildObligationFinancialTerms(extractedData: any, amount: number) {
+  const taxDetails = normalizeTaxDetails(extractedData?.impostos);
+  const totalTaxAmount = parseOptionalAmount(extractedData?.valor_impostos_total)
+    ?? (taxDetails.length ? taxDetails.filter((tax) => !tax.retido).reduce((sum, tax) => sum + tax.valor, 0) : null);
+  const totalWithholdingAmount = parseOptionalAmount(extractedData?.valor_retencoes_total)
+    ?? (taxDetails.length ? taxDetails.filter((tax) => tax.retido).reduce((sum, tax) => sum + tax.valor, 0) : null);
+  const lateFeePercent = parsePercent(extractedData?.multa_atraso_percentual);
+  const lateFeeAmount = parseOptionalAmount(extractedData?.multa_atraso_valor)
+    ?? (lateFeePercent && amount ? Number(((amount * lateFeePercent) / 100).toFixed(2)) : null);
+
+  return {
+    barcode: extractedData?.linha_digitavel || extractedData?.codigo_barras || null,
+    earlyDiscountAmount: parseOptionalAmount(extractedData?.desconto_antecipacao_valor),
+    earlyDiscountPercent: parsePercent(extractedData?.desconto_antecipacao_percentual),
+    earlyDiscountValidUntil: parseOptionalLocalDate(extractedData?.desconto_antecipacao_validade),
+    lateFeeAmount,
+    lateFeePercent,
+    lateInterestPercentPerDay: parsePercent(extractedData?.juros_mora_percentual_dia),
+    paymentLimitDate: parseOptionalLocalDate(extractedData?.data_limite_pagamento),
+    taxDetails: taxDetails.length ? taxDetails : null,
+    totalTaxAmount: totalTaxAmount && totalTaxAmount > 0 ? Number(totalTaxAmount.toFixed(2)) : null,
+    totalWithholdingAmount: totalWithholdingAmount && totalWithholdingAmount > 0 ? Number(totalWithholdingAmount.toFixed(2)) : null,
+  };
+}
+
+function compactDefinedObject<T extends Record<string, any>>(data: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(data).filter(([, value]) => value !== null && value !== undefined && value !== "")
+  ) as Partial<T>;
 }
 
 function daysDiff(a: Date, b: Date): number {
@@ -512,7 +632,7 @@ router.post(
             ],
           },
         ],
-        max_tokens: 2000,
+        max_tokens: 2500,
         temperature: 0.1,
       });
 
@@ -594,6 +714,19 @@ router.post(
             valor_total: extractedData.valor_total,
             data_emissao: extractedData.data_emissao,
             data_vencimento: extractedData.data_vencimento,
+            linha_digitavel: extractedData.linha_digitavel || null,
+            codigo_barras: extractedData.codigo_barras || null,
+            multa_atraso_percentual: extractedData.multa_atraso_percentual ?? null,
+            multa_atraso_valor: extractedData.multa_atraso_valor ?? null,
+            juros_mora_percentual_dia: extractedData.juros_mora_percentual_dia ?? null,
+            juros_mora_valor: extractedData.juros_mora_valor ?? null,
+            desconto_antecipacao_valor: extractedData.desconto_antecipacao_valor ?? null,
+            desconto_antecipacao_percentual: extractedData.desconto_antecipacao_percentual ?? null,
+            desconto_antecipacao_validade: extractedData.desconto_antecipacao_validade || null,
+            data_limite_pagamento: extractedData.data_limite_pagamento || null,
+            impostos: normalizeTaxDetails(extractedData.impostos),
+            valor_impostos_total: extractedData.valor_impostos_total ?? null,
+            valor_retencoes_total: extractedData.valor_retencoes_total ?? null,
             tipo_transacao: extractedData.tipo_transacao,
             descricao: extractedData.descricao,
             referencia: extractedData.referencia,
@@ -829,12 +962,14 @@ router.post(
       }
 
       const extractedData = (document.extractedData || {}) as any;
-      const docRole = normalizeDocumentRole(extractedData.document_role, document.type, descricao || document.description);
+      const confirmedData = { ...extractedData, ...req.body };
+      const docRole = normalizeDocumentRole(confirmedData.document_role, document.type, descricao || document.description);
       const amount = parseAmount(valor);
       const issueDate = data ? parseLocalDate(data) : (document.issueDate || null);
       const dueDate = data_vencimento ? parseLocalDate(data_vencimento) : (document.dueDate || null);
       const normalizedTipoTransacao = (tipo_transacao || "EXPENSE") === "INCOME" ? "INCOME" : "EXPENSE";
       const obligationType = normalizedTipoTransacao === "INCOME" ? "RECEIVABLE" : "PAYABLE";
+      const financialTermData = compactDefinedObject(buildObligationFinancialTerms(confirmedData, amount));
 
       const match = await findMatchingObligation({
         companyId,
@@ -863,6 +998,7 @@ router.post(
             ...(resolvedCategoryId && !obligation.categoryId && { categoryId: resolvedCategoryId }),
             ...(dueDate && !obligation.dueDate && { dueDate }),
             ...(referencia && !obligation.documentNumber && { documentNumber: referencia }),
+            ...financialTermData,
             confidence: Math.max(obligation.confidence, document.extractionConfidence || 0.5, match.score / 100),
             ...(docRole === "PAYMENT_PROOF" && { status: "PAID" }),
           },
@@ -940,6 +1076,7 @@ router.post(
             dueDate,
             documentNumber: referencia || null,
             confidence: document.extractionConfidence || 0.5,
+            ...financialTermData,
             ...(counterpartyId && { counterpartyId }),
             ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
           },

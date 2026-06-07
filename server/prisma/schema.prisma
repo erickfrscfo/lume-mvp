@@ -399,7 +399,12 @@ model FinancialObligation {
   earlyDiscountPercent      Decimal?         @db.Decimal(5, 2)
   earlyDiscountValidUntil   DateTime?
   lateFeeAmount             Decimal?         @db.Decimal(15, 2)
+  lateFeePercent            Decimal?         @db.Decimal(5, 2)
   lateInterestPercentPerDay Decimal?         @db.Decimal(5, 2)
+  paymentLimitDate          DateTime?
+  taxDetails                Json?
+  totalTaxAmount            Decimal?         @db.Decimal(15, 2)
+  totalWithholdingAmount    Decimal?         @db.Decimal(15, 2)
   confidence                Float            @default(0.5)
   counterpartyId            String?
   categoryId                String?

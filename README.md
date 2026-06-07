@@ -357,6 +357,14 @@ CORS_ORIGIN="http://localhost:5173"
 
 ## 📝 Changelog
 
+### 2026-06-07 — OCR financeiro avançado em obrigações
+
+- OCR passou a extrair condições financeiras de boletos/faturas: linha digitável, código de barras, multa por atraso, juros de mora, desconto por antecipação e data limite de pagamento.
+- OCR passou a extrair impostos e retenções de NF/DANFE em estrutura própria, incluindo tipo, base, alíquota, valor e indicador de retenção.
+- `FinancialObligation` recebeu campos para armazenar esses termos sem confundir condições previstas no documento com juros/multas efetivamente pagos.
+- `/api/financial/transactions` passou a retornar a obrigação financeira vinculada à transação, incluindo condições de cobrança, impostos e retenções.
+- Adicionada migration `20260607120000_add_obligation_financial_terms`; aplique a migration e regenere o Prisma Client antes de validar o fluxo em ambiente novo.
+
 ### 2026-06-06 — Camada de obrigação financeira para OCR stand alone
 
 - Adicionados os modelos `FinancialObligation` e `ObligationDocument` para representar contas a pagar/receber e vincular múltiplos documentos à mesma obrigação.
