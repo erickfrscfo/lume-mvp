@@ -15,6 +15,7 @@ import { formatCategoriesForPrompt, resolveCompanyCategories } from "../../share
 const execFileAsync = promisify(execFile);
 
 const router = Router();
+const prismaDynamic = prisma as any;
 
 // Helper: parsear data sem problema de timezone (D-1)
 function parseLocalDate(dateStr: string | Date): Date {
@@ -81,6 +82,7 @@ Antes de extrair, identifique o tipo:
 ## CAMPOS A EXTRAIR
 {
   "tipo_documento": "INVOICE" | "RECEIPT" | "BANK_STATEMENT" | "CONTRACT" | "OTHER",
+  "document_role": "FISCAL_ONLY" | "FISCAL_AND_CHARGE" | "PAYMENT_INSTRUMENT" | "UTILITY_BILL" | "PAYMENT_PROOF" | "CONTRACT" | "OTHER",
   "fornecedor_ou_cliente": "nome da empresa ou pessoa",
   "cnpj_cpf": "número do CNPJ ou CPF formatado (XX.XXX.XXX/XXXX-XX) ou null",
   "valor_total": 0.00,
@@ -147,6 +149,15 @@ ${categoriesForPrompt}
 - Contratos → "CONTRACT"
 - Outros → "OTHER"
 
+### Papel financeiro do documento (document_role)
+- NF/NFS-e de prestador PJ sem boleto ou nota que funciona como cobrança → "FISCAL_AND_CHARGE"
+- NF/NFS-e que parece apenas documento fiscal e pode ter boleto separado → "FISCAL_ONLY"
+- Boleto, duplicata, carnê ou fatura de cobrança → "PAYMENT_INSTRUMENT"
+- Conta de energia, água, telefone, internet, condomínio ou aluguel sem NF separada → "UTILITY_BILL"
+- Comprovante de PIX/TED/pagamento, recibo de quitação ou comprovante bancário → "PAYMENT_PROOF"
+- Contrato com condições recorrentes → "CONTRACT"
+- Se não conseguir definir → "OTHER"
+
 ### Confiança
 - 0.9-1.0: todos os campos principais extraídos com certeza
 - 0.7-0.8: maioria dos campos extraídos, alguns inferidos
@@ -172,6 +183,108 @@ function mapDocumentType(tipo: string): "INVOICE" | "RECEIPT" | "BANK_STATEMENT"
     "outro": "OTHER",
   };
   return map[tipo] || "OTHER";
+}
+
+type DocumentRoleValue =
+  | "FISCAL_ONLY"
+  | "FISCAL_AND_CHARGE"
+  | "PAYMENT_INSTRUMENT"
+  | "UTILITY_BILL"
+  | "PAYMENT_PROOF"
+  | "CONTRACT"
+  | "OTHER";
+
+function normalizeDocumentRole(role: any, docType: string, description?: string | null): DocumentRoleValue {
+  const value = String(role || "").toUpperCase();
+  const validRoles: DocumentRoleValue[] = [
+    "FISCAL_ONLY",
+    "FISCAL_AND_CHARGE",
+    "PAYMENT_INSTRUMENT",
+    "UTILITY_BILL",
+    "PAYMENT_PROOF",
+    "CONTRACT",
+    "OTHER",
+  ];
+  if (validRoles.includes(value as DocumentRoleValue)) return value as DocumentRoleValue;
+
+  const text = `${docType || ""} ${description || ""}`.toLowerCase();
+  if (text.includes("comprovante") || text.includes("pagamento realizado") || text.includes("pix") || text.includes("ted")) {
+    return "PAYMENT_PROOF";
+  }
+  if (text.includes("boleto") || text.includes("fatura") || text.includes("duplicata")) {
+    return "PAYMENT_INSTRUMENT";
+  }
+  if (text.includes("energia") || text.includes("água") || text.includes("agua") || text.includes("telefone") || text.includes("internet")) {
+    return "UTILITY_BILL";
+  }
+  if (text.includes("contrato")) return "CONTRACT";
+  if (text.includes("nfs") || text.includes("nota fiscal")) return "FISCAL_AND_CHARGE";
+  return "OTHER";
+}
+
+function parseAmount(value: any): number {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === "number") return Math.abs(value);
+  const normalized = String(value)
+    .replace(/[^\d,.-]/g, "")
+    .replace(/\.(?=\d{3}(?:\D|$))/g, "")
+    .replace(",", ".");
+  return Math.abs(parseFloat(normalized) || 0);
+}
+
+function daysDiff(a: Date, b: Date): number {
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const aUtc = Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate());
+  const bUtc = Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate());
+  return Math.abs(Math.round((aUtc - bUtc) / msPerDay));
+}
+
+function cleanDocument(value?: string | null): string | null {
+  if (!value) return null;
+  const cleaned = value.replace(/\D/g, "");
+  return cleaned || null;
+}
+
+async function findMatchingObligation(input: {
+  companyId: string;
+  tipoTransacao: "INCOME" | "EXPENSE";
+  counterpartyId: string | null;
+  amount: number;
+  issueDate: Date | null;
+  dueDate: Date | null;
+  reference: string | null;
+}) {
+  const obligationType = input.tipoTransacao === "INCOME" ? "RECEIVABLE" : "PAYABLE";
+  const candidates = await prismaDynamic.financialObligation.findMany({
+    where: {
+      companyId: input.companyId,
+      type: obligationType,
+      status: { in: ["PENDING", "OVERDUE", "PARTIAL"] },
+      amount: {
+        gte: new Prisma.Decimal(Math.max(0, input.amount - 1)),
+        lte: new Prisma.Decimal(input.amount + 1),
+      },
+    },
+    include: {
+      transactions: { include: { detail: true }, take: 1, orderBy: { createdAt: "asc" } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+
+  let best: { obligation: typeof candidates[number]; score: number } | null = null;
+  for (const obligation of candidates) {
+    let score = 0;
+    if (input.counterpartyId && obligation.counterpartyId === input.counterpartyId) score += 45;
+    if (input.reference && obligation.documentNumber && obligation.documentNumber.toLowerCase() === input.reference.toLowerCase()) score += 35;
+    if (input.dueDate && obligation.dueDate && daysDiff(input.dueDate, obligation.dueDate) <= 3) score += 25;
+    if (input.issueDate && obligation.issueDate && daysDiff(input.issueDate, obligation.issueDate) <= 45) score += 15;
+    if (!input.counterpartyId && !obligation.counterpartyId) score += 5;
+
+    if (!best || score > best.score) best = { obligation, score };
+  }
+
+  return best && best.score >= 45 ? best : null;
 }
 
 // ============================================
@@ -426,6 +539,8 @@ router.post(
 
       // Mapear tipo de documento para o enum correto
       const docType = mapDocumentType(extractedData.tipo_documento);
+      const documentRole = normalizeDocumentRole(extractedData.document_role, docType, extractedData.descricao);
+      extractedData.document_role = documentRole;
 
       // Tentar auto-match de categoria
       let categoriaSugerida = extractedData.categoria_sugerida || null;
@@ -455,6 +570,7 @@ router.post(
           type: docType,
           number: extractedData.referencia || `OCR-${Date.now()}`,
           issueDate: extractedData.data_emissao ? parseLocalDate(extractedData.data_emissao) : new Date(),
+          dueDate: extractedData.data_vencimento ? parseLocalDate(extractedData.data_vencimento) : null,
           amount: Math.abs(parseFloat(extractedData.valor_total) || 0),
           description: extractedData.descricao || null,
           extractedData: extractedData,
@@ -472,6 +588,7 @@ router.post(
           fileName: file.originalname,
           extractedData: {
             tipo_documento: docType,
+            document_role: documentRole,
             fornecedor_ou_cliente: extractedData.fornecedor_ou_cliente,
             cnpj_cpf: extractedData.cnpj_cpf,
             valor_total: extractedData.valor_total,
@@ -711,32 +828,160 @@ router.post(
         }
       }
 
-      // Criar a transação com tipo_custo
-      const transaction = await prisma.transaction.create({
-        data: {
-          companyId,
-          date: data ? parseLocalDate(data) : new Date(),
-          description: descricao || "Transação via documento",
-          amount: Math.abs(parseFloat(valor) || 0),
-          tipo_transacao: tipo_transacao || "EXPENSE",
-          source: "OCR",
-          status: "PENDING", // OCR nunca tem data de pagamento/recebimento, sempre PENDING
-          ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
-          ...(counterpartyId && { counterpartyId }),
-          ...(tipoCusto && { tipo_custo: tipoCusto }),
-          ...(tipoCusto && { costConfidence: 0.85 }),
-        },
+      const extractedData = (document.extractedData || {}) as any;
+      const docRole = normalizeDocumentRole(extractedData.document_role, document.type, descricao || document.description);
+      const amount = parseAmount(valor);
+      const issueDate = data ? parseLocalDate(data) : (document.issueDate || null);
+      const dueDate = data_vencimento ? parseLocalDate(data_vencimento) : (document.dueDate || null);
+      const normalizedTipoTransacao = (tipo_transacao || "EXPENSE") === "INCOME" ? "INCOME" : "EXPENSE";
+      const obligationType = normalizedTipoTransacao === "INCOME" ? "RECEIVABLE" : "PAYABLE";
+
+      const match = await findMatchingObligation({
+        companyId,
+        tipoTransacao: normalizedTipoTransacao,
+        counterpartyId,
+        amount,
+        issueDate,
+        dueDate,
+        reference: referencia || null,
       });
 
-      // Criar detalhes da transação (se tiver vencimento)
-      if (data_vencimento) {
+      let transactionId: string | null = null;
+      let obligationId: string | null = null;
+      let action: "CREATED" | "LINKED" | "PAID_LINKED" = "CREATED";
+
+      if (match) {
+        const obligation = match.obligation;
+        obligationId = obligation.id;
+        transactionId = obligation.transactions[0]?.id || null;
+        action = docRole === "PAYMENT_PROOF" ? "PAID_LINKED" : "LINKED";
+
+        await prismaDynamic.financialObligation.update({
+          where: { id: obligation.id },
+          data: {
+            ...(counterpartyId && !obligation.counterpartyId && { counterpartyId }),
+            ...(resolvedCategoryId && !obligation.categoryId && { categoryId: resolvedCategoryId }),
+            ...(dueDate && !obligation.dueDate && { dueDate }),
+            ...(referencia && !obligation.documentNumber && { documentNumber: referencia }),
+            confidence: Math.max(obligation.confidence, document.extractionConfidence || 0.5, match.score / 100),
+            ...(docRole === "PAYMENT_PROOF" && { status: "PAID" }),
+          },
+        });
+
+        await prismaDynamic.obligationDocument.upsert({
+          where: {
+            obligationId_documentId: {
+              obligationId: obligation.id,
+              documentId: document.id,
+            },
+          },
+          create: {
+            obligationId: obligation.id,
+            documentId: document.id,
+            role: docRole,
+            matchConfidence: Math.min(1, match.score / 100),
+          },
+          update: {
+            role: docRole,
+            matchConfidence: Math.min(1, match.score / 100),
+          },
+        });
+
+        if (transactionId) {
+          await prisma.transaction.update({
+            where: { id: transactionId },
+            data: {
+              ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
+              ...(counterpartyId && { counterpartyId }),
+              ...(tipoCusto && { tipo_custo: tipoCusto, costConfidence: 0.85 }),
+              ...(docRole === "PAYMENT_PROOF" && { status: "COMPLETED" }),
+            },
+          });
+
+          await prisma.transactionDetail.upsert({
+            where: { transactionId },
+            create: {
+              transactionId,
+              dueDate,
+              amountOriginal: amount,
+              documentNumber: referencia || obligation.documentNumber || null,
+              reconciliationStatus: docRole === "PAYMENT_PROOF" ? "RECONCILED" : "PENDING",
+              ...(counterpartyId && { counterpartyId }),
+              ...(docRole === "PAYMENT_PROOF" && normalizedTipoTransacao === "EXPENSE" && { paymentDate: issueDate || new Date(), amountPaid: amount }),
+              ...(docRole === "PAYMENT_PROOF" && normalizedTipoTransacao === "INCOME" && { receiptDate: issueDate || new Date(), amountReceived: amount }),
+            },
+            update: {
+              ...(dueDate && { dueDate }),
+              ...(referencia && { documentNumber: referencia }),
+              ...(counterpartyId && { counterpartyId }),
+              ...(docRole === "PAYMENT_PROOF" && { reconciliationStatus: "RECONCILED" }),
+              ...(docRole === "PAYMENT_PROOF" && normalizedTipoTransacao === "EXPENSE" && { paymentDate: issueDate || new Date(), amountPaid: amount }),
+              ...(docRole === "PAYMENT_PROOF" && normalizedTipoTransacao === "INCOME" && { receiptDate: issueDate || new Date(), amountReceived: amount }),
+            },
+          });
+        }
+      } else {
+        if (docRole === "PAYMENT_PROOF") {
+          return res.status(409).json({
+            success: false,
+            error: "Este documento parece ser um comprovante de pagamento, mas nenhuma obrigação compatível foi encontrada para vincular.",
+          });
+        }
+
+        const obligation = await prismaDynamic.financialObligation.create({
+          data: {
+            companyId,
+            type: obligationType,
+            source: "OCR",
+            status: "PENDING",
+            description: descricao || "Obrigação via documento",
+            amount,
+            issueDate,
+            dueDate,
+            documentNumber: referencia || null,
+            confidence: document.extractionConfidence || 0.5,
+            ...(counterpartyId && { counterpartyId }),
+            ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
+          },
+        });
+        obligationId = obligation.id;
+
+        const transaction = await prisma.transaction.create({
+          data: {
+            companyId,
+            date: issueDate || new Date(),
+            description: descricao || "Transação via documento",
+            amount,
+            tipo_transacao: normalizedTipoTransacao,
+            source: "OCR",
+            status: "PENDING",
+            documentId: document.id,
+            obligationId: obligation.id,
+            ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
+            ...(counterpartyId && { counterpartyId }),
+            ...(tipoCusto && { tipo_custo: tipoCusto }),
+            ...(tipoCusto && { costConfidence: 0.85 }),
+          } as any,
+        });
+        transactionId = transaction.id;
+
         await prisma.transactionDetail.create({
           data: {
             transactionId: transaction.id,
-            dueDate: parseLocalDate(data_vencimento),
-            amountOriginal: Math.abs(parseFloat(valor) || 0),
+            dueDate,
+            amountOriginal: amount,
             documentNumber: referencia || null,
             reconciliationStatus: "PENDING",
+            ...(counterpartyId && { counterpartyId }),
+          },
+        });
+
+        await prismaDynamic.obligationDocument.create({
+          data: {
+            obligationId: obligation.id,
+            documentId: document.id,
+            role: docRole,
+            matchConfidence: 1,
           },
         });
       }
@@ -761,7 +1006,7 @@ router.post(
         });
       }
 
-      console.log(`[OCR Confirm] Transação criada: ${transaction.id} | tipo_custo: ${tipoCusto} | categoria: ${resolvedCategoryId} | vencimento: ${data_vencimento || 'N/A'}`);
+      console.log(`[OCR Confirm] action=${action} | obligation=${obligationId} | transaction=${transactionId || 'N/A'} | role=${docRole} | tipo_custo=${tipoCusto} | categoria=${resolvedCategoryId} | vencimento=${data_vencimento || 'N/A'}`);
 
       // Regenerar alertas em background (não bloqueia a resposta)
       generateAlerts(companyId, userId).catch(err => console.error('[OCR Confirm] Erro ao gerar alertas:', err));
@@ -769,9 +1014,16 @@ router.post(
       res.json({
         success: true,
         data: {
-          transactionId: transaction.id,
+          transactionId,
+          obligationId,
           documentId: document.id,
-          message: "Transação criada com sucesso a partir do documento.",
+          action,
+          documentRole: docRole,
+          message: action === "CREATED"
+            ? "Obrigação financeira e transação criadas com sucesso a partir do documento."
+            : action === "PAID_LINKED"
+              ? "Documento vinculado à obrigação existente e pagamento marcado como concluído."
+              : "Documento vinculado à obrigação financeira existente. Nenhuma transação duplicada foi criada.",
         },
       });
     } catch (error) {

@@ -357,6 +357,13 @@ CORS_ORIGIN="http://localhost:5173"
 
 ## 📝 Changelog
 
+### 2026-06-06 — Camada de obrigação financeira para OCR stand alone
+
+- Adicionados os modelos `FinancialObligation` e `ObligationDocument` para representar contas a pagar/receber e vincular múltiplos documentos à mesma obrigação.
+- OCR passou a extrair `document_role`, distinguindo NF/NFS-e, boleto/fatura, conta recorrente, contrato e comprovante de pagamento.
+- Confirmação de OCR agora busca obrigação compatível antes de criar transação, evitando duplicidade quando uma NF e um boleto representam a mesma conta.
+- Adicionada migration `20260606230000_add_financial_obligations`; após aplicar a migration, regenere o Prisma Client com `npx prisma generate`.
+
 ### 2026-06-06 — Métricas executivas para dashboards
 
 - `/api/financial/dashboard` passou a retornar valores vencidos separados entre despesas e receitas, além do total vencido.

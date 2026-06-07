@@ -11,12 +11,12 @@ datasource db {
 // EMPRESA
 // ============================================
 enum CompanySector {
-  VAREJO      // Varejo / Comércio
-  SERVICOS    // Serviços / Consultoria
-  INDUSTRIA   // Indústria / Manufatura
-  SAAS        // SaaS / Tecnologia
-  ECOMMERCE   // E-commerce
-  MISTO       // Misto / Outros
+  VAREJO // Varejo / Comércio
+  SERVICOS // Serviços / Consultoria
+  INDUSTRIA // Indústria / Manufatura
+  SAAS // SaaS / Tecnologia
+  ECOMMERCE // E-commerce
+  MISTO // Misto / Outros
 }
 
 model Company {
@@ -24,22 +24,23 @@ model Company {
   name           String
   cnpj           String        @unique
   sector         CompanySector @default(MISTO)
-  activity       String?       // Atividade descritiva: "consultoria tributária", "varejo de moda", etc.
+  activity       String? // Atividade descritiva: "consultoria tributária", "varejo de moda", etc.
   useCustomChart Boolean       @default(false) // Se true, usa CompanyCategory ao invés de Category global
   code           String        @unique
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  users              User[]
-  transactions       Transaction[]
-  scenarios          Scenario[]
-  alerts             Alert[]
-  counterparties     Counterparty[]
-  documents          Document[]
-  aiInsights         AiInsight[]
-  companyCategories  CompanyCategory[]
-  reportTemplate     ReportTemplate?
-  customIndicators   CustomIndicator[]
+  users                User[]
+  transactions         Transaction[]
+  scenarios            Scenario[]
+  alerts               Alert[]
+  counterparties       Counterparty[]
+  documents            Document[]
+  financialObligations FinancialObligation[]
+  aiInsights           AiInsight[]
+  companyCategories    CompanyCategory[]
+  reportTemplate       ReportTemplate?
+  customIndicators     CustomIndicator[]
 
   @@index([code])
   @@index([cnpj])
@@ -49,15 +50,15 @@ model Company {
 // PLANO DE CONTAS CUSTOMIZADO POR EMPRESA
 // ============================================
 model CompanyCategory {
-  id         String   @id @default(cuid())
+  id         String          @id @default(cuid())
   companyId  String
-  code       String   // ex: "1.2", "4.6"
-  name       String   // ex: "Prestação de Serviços"
+  code       String // ex: "1.2", "4.6"
+  name       String // ex: "Prestação de Serviços"
   type       TransactionType // "INCOME" ou "EXPENSE"
-  parentCode String?  // código do grupo pai (ex: "1" para "1.2")
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  parentCode String? // código do grupo pai (ex: "1" para "1.2")
+  isActive   Boolean         @default(true)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
@@ -73,7 +74,7 @@ model ReportTemplate {
   id             String   @id @default(cuid())
   companyId      String   @unique
   name           String   @default("Relatório Financeiro")
-  indicators     Json     // Array: [{ id, type, order }]
+  indicators     Json // Array: [{ id, type, order }]
   referenceMonth String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -115,7 +116,7 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company        Company          @relation(fields: [companyId], references: [id])
+  company        Company         @relation(fields: [companyId], references: [id])
   uploads        Upload[]
   aiInteractions AiInteraction[]
 
@@ -168,9 +169,10 @@ model Category {
   code        String          @unique
   isDefault   Boolean         @default(true)
 
-  parent       Category?     @relation("CategoryHierarchy", fields: [parentId], references: [id])
-  children     Category[]    @relation("CategoryHierarchy")
-  transactions Transaction[]
+  parent               Category?             @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children             Category[]            @relation("CategoryHierarchy")
+  transactions         Transaction[]
+  financialObligations FinancialObligation[]
 
   @@index([type])
   @@index([parentId])
@@ -183,7 +185,7 @@ model Counterparty {
   id                String           @id @default(cuid())
   companyId         String
   name              String
-  document          String?          // CNPJ ou CPF
+  document          String? // CNPJ ou CPF
   type              CounterpartyType @default(SUPPLIER)
   email             String?
   phone             String?
@@ -198,11 +200,12 @@ model Counterparty {
   totalTransactions Int              @default(0)
   reliabilityScore  Decimal?
 
-  company            Company             @relation(fields: [companyId], references: [id])
-  transactions       Transaction[]
-  transactionDetails TransactionDetail[]
-  documents          Document[]
-  aiInsights         AiInsight[]
+  company              Company               @relation(fields: [companyId], references: [id])
+  transactions         Transaction[]
+  transactionDetails   TransactionDetail[]
+  documents            Document[]
+  financialObligations FinancialObligation[]
+  aiInsights           AiInsight[]
 
   @@index([companyId])
   @@index([companyId, isActive])
@@ -219,30 +222,32 @@ enum CounterpartyType {
 // TRANSAÇÕES FINANCEIRAS
 // ============================================
 model Transaction {
-  id              String            @id @default(cuid())
-  companyId       String
-  uploadId        String?
-  date            DateTime
-  description     String
-  amount          Decimal           @db.Decimal(15, 2)
-  tipo_transacao  TransactionType
-  categoryId      String?
-  aiClassified    Boolean           @default(false)
-  confidence      Decimal?          @db.Decimal(3, 2)
-  tipo_custo      CostType?
-  costConfidence  Decimal?          @db.Decimal(3, 2)
-  notes           String?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  status          TransactionStatus @default(PENDING)
-  source          TransactionSource @default(MANUAL)
-  counterpartyId  String?
-  documentId      String?
+  id             String            @id @default(cuid())
+  companyId      String
+  uploadId       String?
+  date           DateTime
+  description    String
+  amount         Decimal           @db.Decimal(15, 2)
+  tipo_transacao TransactionType
+  categoryId     String?
+  aiClassified   Boolean           @default(false)
+  confidence     Decimal?          @db.Decimal(3, 2)
+  tipo_custo     CostType?
+  costConfidence Decimal?          @db.Decimal(3, 2)
+  notes          String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  status         TransactionStatus @default(PENDING)
+  source         TransactionSource @default(MANUAL)
+  counterpartyId String?
+  documentId     String?
+  obligationId   String?
 
-  company      Company            @relation(fields: [companyId], references: [id])
-  upload       Upload?            @relation(fields: [uploadId], references: [id])
-  category     Category?          @relation(fields: [categoryId], references: [id])
-  counterparty Counterparty?      @relation(fields: [counterpartyId], references: [id])
+  company      Company              @relation(fields: [companyId], references: [id])
+  upload       Upload?              @relation(fields: [uploadId], references: [id])
+  category     Category?            @relation(fields: [categoryId], references: [id])
+  counterparty Counterparty?        @relation(fields: [counterpartyId], references: [id])
+  obligation   FinancialObligation? @relation(fields: [obligationId], references: [id])
   detail       TransactionDetail?
 
   @@index([companyId, date])
@@ -251,6 +256,7 @@ model Transaction {
   @@index([uploadId])
   @@index([tipo_custo])
   @@index([counterpartyId])
+  @@index([obligationId])
   @@index([status])
 }
 
@@ -331,27 +337,28 @@ enum ReconciliationConfirmStatus {
 // DOCUMENTOS FISCAIS
 // ============================================
 model Document {
-  id                    String         @id @default(cuid())
-  companyId             String
-  number                String
-  type                  DocumentType   @default(OTHER)
-  description           String?
-  amount                Decimal?       @db.Decimal(15, 2)
-  issueDate             DateTime?
-  dueDate               DateTime?
-  status                DocumentStatus @default(ACTIVE)
-  counterpartyId        String?
-  notes                 String?
-  fileName              String?
-  fileType              String?
-  fileSize              Int?
-  extractedData         Json?
-  extractionConfidence  Float?
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
+  id                   String         @id @default(cuid())
+  companyId            String
+  number               String
+  type                 DocumentType   @default(OTHER)
+  description          String?
+  amount               Decimal?       @db.Decimal(15, 2)
+  issueDate            DateTime?
+  dueDate              DateTime?
+  status               DocumentStatus @default(ACTIVE)
+  counterpartyId       String?
+  notes                String?
+  fileName             String?
+  fileType             String?
+  fileSize             Int?
+  extractedData        Json?
+  extractionConfidence Float?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
 
-  company      Company       @relation(fields: [companyId], references: [id])
-  counterparty Counterparty? @relation(fields: [counterpartyId], references: [id])
+  company             Company              @relation(fields: [companyId], references: [id])
+  counterparty        Counterparty?        @relation(fields: [counterpartyId], references: [id])
+  obligationDocuments ObligationDocument[]
 
   @@index([companyId])
   @@index([companyId, type])
@@ -370,6 +377,92 @@ enum DocumentStatus {
   ACTIVE
   CANCELLED
   ARCHIVED
+}
+
+// ============================================
+// OBRIGAÇÕES FINANCEIRAS
+// ============================================
+model FinancialObligation {
+  id                        String           @id @default(cuid())
+  companyId                 String
+  type                      ObligationType
+  status                    ObligationStatus @default(PENDING)
+  source                    ObligationSource @default(OCR)
+  description               String
+  amount                    Decimal          @db.Decimal(15, 2)
+  issueDate                 DateTime?
+  dueDate                   DateTime?
+  expectedPaymentDate       DateTime?
+  documentNumber            String?
+  barcode                   String?
+  earlyDiscountAmount       Decimal?         @db.Decimal(15, 2)
+  earlyDiscountPercent      Decimal?         @db.Decimal(5, 2)
+  earlyDiscountValidUntil   DateTime?
+  lateFeeAmount             Decimal?         @db.Decimal(15, 2)
+  lateInterestPercentPerDay Decimal?         @db.Decimal(5, 2)
+  confidence                Float            @default(0.5)
+  counterpartyId            String?
+  categoryId                String?
+  createdAt                 DateTime         @default(now())
+  updatedAt                 DateTime         @updatedAt
+
+  company             Company              @relation(fields: [companyId], references: [id])
+  counterparty        Counterparty?        @relation(fields: [counterpartyId], references: [id])
+  category            Category?            @relation(fields: [categoryId], references: [id])
+  obligationDocuments ObligationDocument[]
+  transactions        Transaction[]
+
+  @@index([companyId])
+  @@index([companyId, status])
+  @@index([companyId, type])
+  @@index([counterpartyId])
+  @@index([dueDate])
+}
+
+model ObligationDocument {
+  id              String       @id @default(cuid())
+  obligationId    String
+  documentId      String
+  role            DocumentRole
+  matchConfidence Float        @default(1.0)
+  createdAt       DateTime     @default(now())
+
+  obligation FinancialObligation @relation(fields: [obligationId], references: [id], onDelete: Cascade)
+  document   Document            @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([obligationId, documentId])
+  @@index([obligationId])
+  @@index([documentId])
+  @@index([role])
+}
+
+enum ObligationType {
+  PAYABLE
+  RECEIVABLE
+}
+
+enum ObligationStatus {
+  PENDING
+  PAID
+  OVERDUE
+  PARTIAL
+  CANCELLED
+}
+
+enum ObligationSource {
+  OCR
+  MANUAL
+  ERP
+}
+
+enum DocumentRole {
+  FISCAL_ONLY
+  FISCAL_AND_CHARGE
+  PAYMENT_INSTRUMENT
+  UTILITY_BILL
+  PAYMENT_PROOF
+  CONTRACT
+  OTHER
 }
 
 // ============================================
@@ -476,25 +569,25 @@ model Alert {
 // AI INSIGHTS (Conciliação)
 // ============================================
 model AiInsight {
-  id                      String    @id @default(cuid())
-  companyId               String
-  insightType             String
-  severity                String    @default("MEDIUM")
-  title                   String
-  description             String?
-  recommendation          String?
-  relatedTransactionIds   String[]  @default([])
-  relatedCounterpartyId   String?
-  metadata                Json      @default("{}")
-  potentialImpact         Decimal?
-  potentialSavings        Decimal?
-  isRead                  Boolean   @default(false)
-  isDismissed             Boolean   @default(false)
-  readAt                  DateTime?
-  actedAt                 DateTime?
-  expiresAt               DateTime?
-  createdAt               DateTime  @default(now())
-  updatedAt               DateTime  @updatedAt
+  id                    String    @id @default(cuid())
+  companyId             String
+  insightType           String
+  severity              String    @default("MEDIUM")
+  title                 String
+  description           String?
+  recommendation        String?
+  relatedTransactionIds String[]  @default([])
+  relatedCounterpartyId String?
+  metadata              Json      @default("{}")
+  potentialImpact       Decimal?
+  potentialSavings      Decimal?
+  isRead                Boolean   @default(false)
+  isDismissed           Boolean   @default(false)
+  readAt                DateTime?
+  actedAt               DateTime?
+  expiresAt             DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   company      Company       @relation(fields: [companyId], references: [id])
   counterparty Counterparty? @relation(fields: [relatedCounterpartyId], references: [id])
