@@ -118,6 +118,8 @@ function mapObligationInstallment(item: any) {
   return {
     id: item.id,
     obligationId: item.obligationId,
+    installmentId: item.id,
+    isInstallment: true,
     installmentNumber: item.installmentNumber,
     totalInstallments: item.totalInstallments,
     status: isOverdue ? "OVERDUE" : item.status,
@@ -158,6 +160,66 @@ function mapObligationInstallment(item: any) {
         name: item.obligation.category.name,
       } : null,
     } : null,
+    transaction: item.transactions?.[0] ? {
+      id: item.transactions[0].id,
+      status: item.transactions[0].status,
+      amount: Number(item.transactions[0].amount),
+      description: item.transactions[0].description,
+    } : null,
+  };
+}
+
+function mapStandaloneObligation(item: any) {
+  const dueDate = item.dueDate ? new Date(item.dueDate) : null;
+  const today = new Date();
+  const daysUntilDue = dueDate ? daysBetween(today, dueDate) : null;
+  const isOverdue = Boolean(dueDate && dueDate < today && item.status !== "PAID");
+
+  return {
+    id: `obligation:${item.id}`,
+    obligationId: item.id,
+    installmentId: null,
+    isInstallment: false,
+    installmentNumber: 1,
+    totalInstallments: item.totalInstallments || 1,
+    status: isOverdue ? "OVERDUE" : item.status,
+    amount: Number(item.amount),
+    dueDate: item.dueDate,
+    expectedPaymentDate: item.expectedPaymentDate,
+    documentNumber: item.documentNumber,
+    barcode: item.barcode,
+    lateFeeAmount: item.lateFeeAmount ? Number(item.lateFeeAmount) : null,
+    lateFeePercent: item.lateFeePercent ? Number(item.lateFeePercent) : null,
+    lateInterestPercentPerDay: item.lateInterestPercentPerDay ? Number(item.lateInterestPercentPerDay) : null,
+    paymentLimitDate: item.paymentLimitDate,
+    daysUntilDue,
+    isOverdue,
+    obligation: {
+      id: item.id,
+      type: item.type,
+      status: item.status,
+      source: item.source,
+      description: item.description,
+      amount: Number(item.amount),
+      issueDate: item.issueDate,
+      dueDate: item.dueDate,
+      documentNumber: item.documentNumber,
+      totalInstallments: item.totalInstallments || 1,
+      taxDetails: item.taxDetails || [],
+      totalTaxAmount: item.totalTaxAmount ? Number(item.totalTaxAmount) : null,
+      totalWithholdingAmount: item.totalWithholdingAmount ? Number(item.totalWithholdingAmount) : null,
+      counterparty: item.counterparty ? {
+        id: item.counterparty.id,
+        name: item.counterparty.name,
+        document: item.counterparty.document,
+        type: item.counterparty.type,
+      } : null,
+      category: item.category ? {
+        id: item.category.id,
+        code: item.category.code,
+        name: item.category.name,
+      } : null,
+    },
     transaction: item.transactions?.[0] ? {
       id: item.transactions[0].id,
       status: item.transactions[0].status,
@@ -538,21 +600,53 @@ router.get("/obligations", authMiddleware, async (req: Request, res: Response, n
       where.obligation = { type };
     }
 
-    const installments = await prismaDynamic.obligationInstallment.findMany({
-      where,
-      include: {
-        obligation: {
-          include: {
-            counterparty: { select: { id: true, name: true, document: true, type: true } },
-            category: { select: { id: true, code: true, name: true } },
-          },
-        },
-        transactions: { select: { id: true, status: true, amount: true, description: true }, take: 1, orderBy: { createdAt: "asc" } },
-      },
-      orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
-    });
+    const obligationWhere: any = {
+      companyId,
+      dueDate: { lte: horizonDate },
+      installments: { none: {} },
+    };
+    if (status && status !== "all") {
+      obligationWhere.status = status;
+    } else {
+      obligationWhere.status = { in: ["PENDING", "OVERDUE", "PARTIAL"] };
+    }
+    if (type === "PAYABLE" || type === "RECEIVABLE") {
+      obligationWhere.type = type;
+    }
 
-    const mapped = installments.map(mapObligationInstallment);
+    const [installments, standaloneObligations] = await Promise.all([
+      prismaDynamic.obligationInstallment.findMany({
+        where,
+        include: {
+          obligation: {
+            include: {
+              counterparty: { select: { id: true, name: true, document: true, type: true } },
+              category: { select: { id: true, code: true, name: true } },
+            },
+          },
+          transactions: { select: { id: true, status: true, amount: true, description: true }, take: 1, orderBy: { createdAt: "asc" } },
+        },
+        orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+      }),
+      prismaDynamic.financialObligation.findMany({
+        where: obligationWhere,
+        include: {
+          counterparty: { select: { id: true, name: true, document: true, type: true } },
+          category: { select: { id: true, code: true, name: true } },
+          transactions: { select: { id: true, status: true, amount: true, description: true }, take: 1, orderBy: { createdAt: "asc" } },
+        },
+        orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+      }),
+    ]);
+
+    const mapped = [
+      ...installments.map(mapObligationInstallment),
+      ...standaloneObligations.map(mapStandaloneObligation),
+    ].sort((a, b) => {
+      const aTime = a.dueDate ? new Date(a.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+      const bTime = b.dueDate ? new Date(b.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+      return aTime - bTime;
+    });
     const buckets = [
       { key: "overdue", label: "Vencidas", from: -Infinity, to: -1 },
       { key: "30", label: "Próximos 30 dias", from: 0, to: 30 },
