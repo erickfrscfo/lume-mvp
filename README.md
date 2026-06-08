@@ -363,7 +363,7 @@ CORS_ORIGIN="http://localhost:5173"
 - `Transaction` e `ObligationDocument` passaram a poder se vincular à parcela específica da obrigação, além da obrigação pai.
 - OCR passou a solicitar e normalizar `numero_parcela`, `total_parcelas` e `parcelas[]`, suportando NF/DANFE com duplicatas ou documentos geradores parcelados.
 - Match de OCR agora considera parcela por valor, vencimento, referência, linha digitável/código de barras, contraparte/CNPJ e data de emissão.
-- `/api/financial/obligations` retorna contas/obrigações abertas agrupadas em vencidas, próximos 30, 60, 90 e 120 dias, incluindo obrigações simples e parcelas.
+- `/api/financial/obligations` retorna contas/obrigações abertas agrupadas em vencidas, próximos 30, 60, 90 e 120 dias, incluindo obrigações simples, parcelas e transações legadas pendentes sem obrigação formal.
 - Adicionada migration `20260607143000_add_obligation_installments`; aplique a migration e regenere o Prisma Client antes de testar em novo ambiente.
 
 ### 2026-06-07 — OCR financeiro avançado em obrigações

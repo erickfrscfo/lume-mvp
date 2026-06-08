@@ -229,6 +229,68 @@ function mapStandaloneObligation(item: any) {
   };
 }
 
+function mapLegacyTransactionObligation(item: any) {
+  const dueDate = item.detail?.dueDate ? new Date(item.detail.dueDate) : null;
+  const today = new Date();
+  const daysUntilDue = dueDate ? daysBetween(today, dueDate) : null;
+  const isOverdue = Boolean(dueDate && dueDate < today && item.status !== "COMPLETED");
+  const type = item.tipo_transacao === "INCOME" ? "RECEIVABLE" : "PAYABLE";
+
+  return {
+    id: `transaction:${item.id}`,
+    obligationId: null,
+    installmentId: null,
+    transactionOnly: true,
+    isInstallment: false,
+    installmentNumber: 1,
+    totalInstallments: 1,
+    status: isOverdue ? "OVERDUE" : item.status,
+    amount: Number(item.amount),
+    dueDate: item.detail?.dueDate || null,
+    expectedPaymentDate: null,
+    documentNumber: item.detail?.documentNumber || null,
+    barcode: item.detail?.bankReference || null,
+    lateFeeAmount: item.detail?.interest ? Number(item.detail.interest) : null,
+    lateFeePercent: null,
+    lateInterestPercentPerDay: null,
+    paymentLimitDate: null,
+    daysUntilDue,
+    isOverdue,
+    obligation: {
+      id: null,
+      type,
+      status: item.status,
+      source: item.source,
+      description: item.description,
+      amount: Number(item.amount),
+      issueDate: item.date,
+      dueDate: item.detail?.dueDate || null,
+      documentNumber: item.detail?.documentNumber || null,
+      totalInstallments: 1,
+      taxDetails: [],
+      totalTaxAmount: null,
+      totalWithholdingAmount: null,
+      counterparty: item.counterparty ? {
+        id: item.counterparty.id,
+        name: item.counterparty.name,
+        document: item.counterparty.document,
+        type: item.counterparty.type,
+      } : null,
+      category: item.category ? {
+        id: item.category.id,
+        code: item.category.code,
+        name: item.category.name,
+      } : null,
+    },
+    transaction: {
+      id: item.id,
+      status: item.status,
+      amount: Number(item.amount),
+      description: item.description,
+    },
+  };
+}
+
 // ============================================
 // GET /api/financial/dashboard
 // REGIME DE CAIXA: apenas transações COMPLETED, agrupadas por data efetiva
@@ -614,7 +676,29 @@ router.get("/obligations", authMiddleware, async (req: Request, res: Response, n
       obligationWhere.type = type;
     }
 
-    const [installments, standaloneObligations] = await Promise.all([
+    const legacyTransactionWhere: any = {
+      companyId,
+      obligationId: null,
+      status: { in: ["PENDING", "OVERDUE", "PARTIAL"] },
+      detail: {
+        dueDate: { lte: horizonDate },
+      },
+    };
+    if (type === "PAYABLE") {
+      legacyTransactionWhere.tipo_transacao = "EXPENSE";
+      legacyTransactionWhere.detail.paymentDate = null;
+    } else if (type === "RECEIVABLE") {
+      legacyTransactionWhere.tipo_transacao = "INCOME";
+      legacyTransactionWhere.detail.receiptDate = null;
+    } else {
+      legacyTransactionWhere.OR = [
+        { tipo_transacao: "EXPENSE", detail: { dueDate: { lte: horizonDate }, paymentDate: null } },
+        { tipo_transacao: "INCOME", detail: { dueDate: { lte: horizonDate }, receiptDate: null } },
+      ];
+      delete legacyTransactionWhere.detail;
+    }
+
+    const [installments, standaloneObligations, legacyTransactions] = await Promise.all([
       prismaDynamic.obligationInstallment.findMany({
         where,
         include: {
@@ -637,11 +721,21 @@ router.get("/obligations", authMiddleware, async (req: Request, res: Response, n
         },
         orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
       }),
+      prisma.transaction.findMany({
+        where: legacyTransactionWhere,
+        include: {
+          detail: true,
+          counterparty: { select: { id: true, name: true, document: true, type: true } },
+          category: { select: { id: true, code: true, name: true } },
+        },
+        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      }),
     ]);
 
     const mapped = [
       ...installments.map(mapObligationInstallment),
       ...standaloneObligations.map(mapStandaloneObligation),
+      ...legacyTransactions.map(mapLegacyTransactionObligation),
     ].sort((a, b) => {
       const aTime = a.dueDate ? new Date(a.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
       const bTime = b.dueDate ? new Date(b.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
