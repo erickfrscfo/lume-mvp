@@ -88,6 +88,19 @@ Antes de extrair, identifique o tipo:
   "valor_total": 0.00,
   "data_emissao": "YYYY-MM-DD" ou null,
   "data_vencimento": "YYYY-MM-DD" ou null,
+  "numero_parcela": 1 ou null,
+  "total_parcelas": 1 ou null,
+  "parcelas": [
+    {
+      "numero": 1,
+      "total": 3,
+      "valor": 0.00,
+      "vencimento": "YYYY-MM-DD" ou null,
+      "referencia": "número da parcela, duplicata ou boleto" ou null,
+      "linha_digitavel": "linha digitável específica da parcela" ou null,
+      "codigo_barras": "código de barras específico da parcela" ou null
+    }
+  ],
   "linha_digitavel": "linha digitável do boleto/fatura" ou null,
   "codigo_barras": "código de barras numérico" ou null,
   "multa_atraso_percentual": 0.00 ou null,
@@ -135,6 +148,13 @@ Antes de extrair, identifique o tipo:
 - data_emissao: "Data de Emissão", "Data", "Emitida em", ou mês de referência (ex: "Referência 02/2026" → use o primeiro dia: "2026-02-01")
 - data_vencimento: "Vencimento", "Data de Vencimento", "Vence em" — MUITO IMPORTANTE para boletos
 - Formato de saída: YYYY-MM-DD
+
+### Parcelamento
+- Se o documento indicar pagamento parcelado, extraia total_parcelas e todas as parcelas visíveis em parcelas[].
+- Para cada parcela, extraia numero, total, valor, vencimento, referencia e linha digitavel/codigo de barras quando disponíveis.
+- Em boletos de uma parcela específica, preencha numero_parcela e total_parcelas quando o documento trouxer "parcela X/Y", duplicata ou referência equivalente.
+- Se não houver parcelamento explícito, use total_parcelas=1, numero_parcela=1 e parcelas=[].
+- Se a NF/DANFE trouxer várias duplicatas/vencimentos, trate cada duplicata como uma parcela da obrigação.
 
 ### Fornecedor/Cliente
 - Em BOLETOS/FATURAS: o fornecedor é a empresa que EMITE a cobrança (ex: Vivo, CPFL, Sabesp, etc.)
@@ -346,6 +366,70 @@ function buildObligationFinancialTerms(extractedData: any, amount: number) {
   };
 }
 
+type NormalizedInstallment = {
+  installmentNumber: number;
+  totalInstallments: number;
+  amount: number;
+  dueDate: Date | null;
+  documentNumber: string | null;
+  barcode: string | null;
+  earlyDiscountAmount: number | null;
+  earlyDiscountPercent: number | null;
+  earlyDiscountValidUntil: Date | null;
+  lateFeeAmount: number | null;
+  lateFeePercent: number | null;
+  lateInterestPercentPerDay: number | null;
+  paymentLimitDate: Date | null;
+};
+
+function normalizeInstallments(extractedData: any, fallbackAmount: number, fallbackDueDate: Date | null, fallbackReference: string | null): NormalizedInstallment[] {
+  const explicitInstallments = Array.isArray(extractedData?.parcelas) ? extractedData.parcelas : [];
+  const totalFromHeader = Math.max(1, parseInt(String(extractedData?.total_parcelas || explicitInstallments.length || 1), 10) || 1);
+
+  const source = explicitInstallments.length > 0
+    ? explicitInstallments
+    : [{
+        numero: extractedData?.numero_parcela || 1,
+        total: extractedData?.total_parcelas || totalFromHeader,
+        valor: fallbackAmount,
+        vencimento: extractedData?.data_vencimento || null,
+        referencia: fallbackReference,
+        linha_digitavel: extractedData?.linha_digitavel || null,
+        codigo_barras: extractedData?.codigo_barras || null,
+      }];
+
+  return source
+    .map((item: any, index: number) => {
+      const installmentNumber = Math.max(1, parseInt(String(item?.numero || index + 1), 10) || index + 1);
+      const totalInstallments = Math.max(totalFromHeader, parseInt(String(item?.total || totalFromHeader), 10) || totalFromHeader);
+      const installmentAmount = parseOptionalAmount(item?.valor) || (source.length === 1 ? fallbackAmount : 0);
+      if (!installmentAmount) return null;
+      const installmentData = {
+        ...extractedData,
+        linha_digitavel: item?.linha_digitavel || extractedData?.linha_digitavel,
+        codigo_barras: item?.codigo_barras || extractedData?.codigo_barras,
+      };
+      const financialTerms = buildObligationFinancialTerms(installmentData, installmentAmount);
+
+      return {
+        installmentNumber,
+        totalInstallments,
+        amount: installmentAmount,
+        dueDate: parseOptionalLocalDate(item?.vencimento) || fallbackDueDate,
+        documentNumber: item?.referencia || fallbackReference,
+        barcode: item?.linha_digitavel || item?.codigo_barras || financialTerms.barcode,
+        earlyDiscountAmount: financialTerms.earlyDiscountAmount,
+        earlyDiscountPercent: financialTerms.earlyDiscountPercent,
+        earlyDiscountValidUntil: financialTerms.earlyDiscountValidUntil,
+        lateFeeAmount: financialTerms.lateFeeAmount,
+        lateFeePercent: financialTerms.lateFeePercent,
+        lateInterestPercentPerDay: financialTerms.lateInterestPercentPerDay,
+        paymentLimitDate: financialTerms.paymentLimitDate,
+      };
+    })
+    .filter(Boolean) as NormalizedInstallment[];
+}
+
 function compactDefinedObject<T extends Record<string, any>>(data: T): Partial<T> {
   return Object.fromEntries(
     Object.entries(data).filter(([, value]) => value !== null && value !== undefined && value !== "")
@@ -373,6 +457,7 @@ async function findMatchingObligation(input: {
   issueDate: Date | null;
   dueDate: Date | null;
   reference: string | null;
+  barcode: string | null;
 }) {
   const obligationType = input.tipoTransacao === "INCOME" ? "RECEIVABLE" : "PAYABLE";
   const candidates = await prismaDynamic.financialObligation.findMany({
@@ -380,28 +465,39 @@ async function findMatchingObligation(input: {
       companyId: input.companyId,
       type: obligationType,
       status: { in: ["PENDING", "OVERDUE", "PARTIAL"] },
-      amount: {
-        gte: new Prisma.Decimal(Math.max(0, input.amount - 1)),
-        lte: new Prisma.Decimal(input.amount + 1),
-      },
     },
     include: {
+      installments: {
+        include: {
+          transactions: { include: { detail: true }, take: 1, orderBy: { createdAt: "asc" } },
+        },
+      },
       transactions: { include: { detail: true }, take: 1, orderBy: { createdAt: "asc" } },
     },
     orderBy: { createdAt: "desc" },
-    take: 20,
+    take: 50,
   });
 
-  let best: { obligation: typeof candidates[number]; score: number } | null = null;
+  let best: { obligation: typeof candidates[number]; installment: any | null; score: number } | null = null;
   for (const obligation of candidates) {
-    let score = 0;
-    if (input.counterpartyId && obligation.counterpartyId === input.counterpartyId) score += 45;
-    if (input.reference && obligation.documentNumber && obligation.documentNumber.toLowerCase() === input.reference.toLowerCase()) score += 35;
-    if (input.dueDate && obligation.dueDate && daysDiff(input.dueDate, obligation.dueDate) <= 3) score += 25;
-    if (input.issueDate && obligation.issueDate && daysDiff(input.issueDate, obligation.issueDate) <= 45) score += 15;
-    if (!input.counterpartyId && !obligation.counterpartyId) score += 5;
+    const installments = obligation.installments?.length ? obligation.installments : [null];
+    for (const installment of installments) {
+      let score = 0;
+      const amountToCompare = installment ? Number(installment.amount) : Number(obligation.amount);
+      const dueDateToCompare = installment?.dueDate || obligation.dueDate;
+      const documentNumberToCompare = installment?.documentNumber || obligation.documentNumber;
+      const barcodeToCompare = installment?.barcode || obligation.barcode;
 
-    if (!best || score > best.score) best = { obligation, score };
+      if (input.counterpartyId && obligation.counterpartyId === input.counterpartyId) score += 35;
+      if (!input.counterpartyId && !obligation.counterpartyId) score += 5;
+      if (Math.abs(amountToCompare - input.amount) <= 1) score += 35;
+      if (input.reference && documentNumberToCompare && documentNumberToCompare.toLowerCase() === input.reference.toLowerCase()) score += 25;
+      if (input.barcode && barcodeToCompare && barcodeToCompare.replace(/\D/g, "") === input.barcode.replace(/\D/g, "")) score += 45;
+      if (input.dueDate && dueDateToCompare && daysDiff(input.dueDate, dueDateToCompare) <= 3) score += 30;
+      if (input.issueDate && obligation.issueDate && daysDiff(input.issueDate, obligation.issueDate) <= 45) score += 10;
+
+      if (!best || score > best.score) best = { obligation, installment, score };
+    }
   }
 
   return best && best.score >= 45 ? best : null;
@@ -714,6 +810,9 @@ router.post(
             valor_total: extractedData.valor_total,
             data_emissao: extractedData.data_emissao,
             data_vencimento: extractedData.data_vencimento,
+            numero_parcela: extractedData.numero_parcela ?? null,
+            total_parcelas: extractedData.total_parcelas ?? null,
+            parcelas: extractedData.parcelas || [],
             linha_digitavel: extractedData.linha_digitavel || null,
             codigo_barras: extractedData.codigo_barras || null,
             multa_atraso_percentual: extractedData.multa_atraso_percentual ?? null,
@@ -970,6 +1069,15 @@ router.post(
       const normalizedTipoTransacao = (tipo_transacao || "EXPENSE") === "INCOME" ? "INCOME" : "EXPENSE";
       const obligationType = normalizedTipoTransacao === "INCOME" ? "RECEIVABLE" : "PAYABLE";
       const financialTermData = compactDefinedObject(buildObligationFinancialTerms(confirmedData, amount));
+      const normalizedInstallments = normalizeInstallments(confirmedData, amount, dueDate, referencia || null);
+      const primaryInstallment = normalizedInstallments[0] || {
+        installmentNumber: 1,
+        totalInstallments: 1,
+        amount,
+        dueDate,
+        documentNumber: referencia || null,
+        barcode: (financialTermData as any).barcode || null,
+      };
 
       const match = await findMatchingObligation({
         companyId,
@@ -979,16 +1087,19 @@ router.post(
         issueDate,
         dueDate,
         reference: referencia || null,
+        barcode: (financialTermData as any).barcode || null,
       });
 
       let transactionId: string | null = null;
       let obligationId: string | null = null;
+      let installmentId: string | null = null;
       let action: "CREATED" | "LINKED" | "PAID_LINKED" | "RECREATED" = "CREATED";
 
       if (match) {
         const obligation = match.obligation;
+        const matchedInstallment = match.installment;
         obligationId = obligation.id;
-        transactionId = obligation.transactions[0]?.id || null;
+        transactionId = matchedInstallment?.transactions?.[0]?.id || obligation.transactions[0]?.id || null;
         action = docRole === "PAYMENT_PROOF" ? "PAID_LINKED" : "LINKED";
 
         await prismaDynamic.financialObligation.update({
@@ -998,11 +1109,61 @@ router.post(
             ...(resolvedCategoryId && !obligation.categoryId && { categoryId: resolvedCategoryId }),
             ...(dueDate && !obligation.dueDate && { dueDate }),
             ...(referencia && !obligation.documentNumber && { documentNumber: referencia }),
+            totalInstallments: Math.max(obligation.totalInstallments || 1, primaryInstallment.totalInstallments || 1),
             ...financialTermData,
             confidence: Math.max(obligation.confidence, document.extractionConfidence || 0.5, match.score / 100),
             ...(docRole === "PAYMENT_PROOF" && { status: "PAID" }),
           },
         });
+
+        installmentId = matchedInstallment?.id || null;
+        if (matchedInstallment) {
+          await prismaDynamic.obligationInstallment.update({
+            where: { id: matchedInstallment.id },
+            data: compactDefinedObject({
+              amount: primaryInstallment.amount || amount,
+              dueDate: primaryInstallment.dueDate || dueDate,
+              documentNumber: primaryInstallment.documentNumber || referencia || matchedInstallment.documentNumber,
+              barcode: primaryInstallment.barcode || matchedInstallment.barcode,
+              lateFeeAmount: primaryInstallment.lateFeeAmount,
+              lateFeePercent: primaryInstallment.lateFeePercent,
+              lateInterestPercentPerDay: primaryInstallment.lateInterestPercentPerDay,
+              earlyDiscountAmount: primaryInstallment.earlyDiscountAmount,
+              earlyDiscountPercent: primaryInstallment.earlyDiscountPercent,
+              earlyDiscountValidUntil: primaryInstallment.earlyDiscountValidUntil,
+              paymentLimitDate: primaryInstallment.paymentLimitDate,
+              confidence: Math.max(matchedInstallment.confidence || 0.5, document.extractionConfidence || 0.5, match.score / 100),
+              ...(docRole === "PAYMENT_PROOF" && { status: "PAID" }),
+            }),
+          });
+        } else {
+          const installment = await prismaDynamic.obligationInstallment.upsert({
+            where: {
+              obligationId_installmentNumber: {
+                obligationId: obligation.id,
+                installmentNumber: primaryInstallment.installmentNumber || 1,
+              },
+            },
+            create: {
+              companyId,
+              obligationId: obligation.id,
+              installmentNumber: primaryInstallment.installmentNumber || 1,
+              totalInstallments: primaryInstallment.totalInstallments || 1,
+              status: docRole === "PAYMENT_PROOF" ? "PAID" : "PENDING",
+              amount: primaryInstallment.amount || amount,
+              dueDate: primaryInstallment.dueDate || dueDate,
+              documentNumber: primaryInstallment.documentNumber || referencia || obligation.documentNumber || null,
+              barcode: primaryInstallment.barcode || null,
+              confidence: document.extractionConfidence || 0.5,
+            },
+            update: compactDefinedObject({
+              dueDate: primaryInstallment.dueDate || dueDate,
+              documentNumber: primaryInstallment.documentNumber || referencia || null,
+              barcode: primaryInstallment.barcode || null,
+            }),
+          });
+          installmentId = installment.id;
+        }
 
         await prismaDynamic.obligationDocument.upsert({
           where: {
@@ -1013,11 +1174,13 @@ router.post(
           },
           create: {
             obligationId: obligation.id,
+            installmentId,
             documentId: document.id,
             role: docRole,
             matchConfidence: Math.min(1, match.score / 100),
           },
           update: {
+            installmentId,
             role: docRole,
             matchConfidence: Math.min(1, match.score / 100),
           },
@@ -1029,6 +1192,7 @@ router.post(
             data: {
               ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
               ...(counterpartyId && { counterpartyId }),
+              ...(installmentId && { installmentId }),
               ...(tipoCusto && { tipo_custo: tipoCusto, costConfidence: 0.85 }),
               ...(docRole === "PAYMENT_PROOF" && { status: "COMPLETED" }),
             },
@@ -1067,6 +1231,7 @@ router.post(
               status: docRole === "PAYMENT_PROOF" ? "COMPLETED" : "PENDING",
               documentId: document.id,
               obligationId: obligation.id,
+              ...(installmentId && { installmentId }),
               ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
               ...(counterpartyId && { counterpartyId }),
               ...(tipoCusto && { tipo_custo: tipoCusto, costConfidence: 0.85 }),
@@ -1108,6 +1273,7 @@ router.post(
             dueDate,
             documentNumber: referencia || null,
             confidence: document.extractionConfidence || 0.5,
+            totalInstallments: primaryInstallment.totalInstallments || normalizedInstallments.length || 1,
             ...financialTermData,
             ...(counterpartyId && { counterpartyId }),
             ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
@@ -1115,39 +1281,70 @@ router.post(
         });
         obligationId = obligation.id;
 
-        const transaction = await prisma.transaction.create({
-          data: {
-            companyId,
-            date: issueDate || new Date(),
-            description: descricao || "Transação via documento",
-            amount,
-            tipo_transacao: normalizedTipoTransacao,
-            source: "OCR",
-            status: "PENDING",
-            documentId: document.id,
-            obligationId: obligation.id,
-            ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
-            ...(counterpartyId && { counterpartyId }),
-            ...(tipoCusto && { tipo_custo: tipoCusto }),
-            ...(tipoCusto && { costConfidence: 0.85 }),
-          } as any,
-        });
-        transactionId = transaction.id;
+        let firstInstallmentId: string | null = null;
+        for (const installmentData of normalizedInstallments) {
+          const installment = await prismaDynamic.obligationInstallment.create({
+            data: {
+              companyId,
+              obligationId: obligation.id,
+              installmentNumber: installmentData.installmentNumber,
+              totalInstallments: installmentData.totalInstallments,
+              status: "PENDING",
+              amount: installmentData.amount,
+              dueDate: installmentData.dueDate,
+              documentNumber: installmentData.documentNumber,
+              barcode: installmentData.barcode,
+              earlyDiscountAmount: installmentData.earlyDiscountAmount,
+              earlyDiscountPercent: installmentData.earlyDiscountPercent,
+              earlyDiscountValidUntil: installmentData.earlyDiscountValidUntil,
+              lateFeeAmount: installmentData.lateFeeAmount,
+              lateFeePercent: installmentData.lateFeePercent,
+              lateInterestPercentPerDay: installmentData.lateInterestPercentPerDay,
+              paymentLimitDate: installmentData.paymentLimitDate,
+              confidence: document.extractionConfidence || 0.5,
+            },
+          });
+          if (!firstInstallmentId) firstInstallmentId = installment.id;
+          if (!installmentId) installmentId = installment.id;
 
-        await prisma.transactionDetail.create({
-          data: {
-            transactionId: transaction.id,
-            dueDate,
-            amountOriginal: amount,
-            documentNumber: referencia || null,
-            reconciliationStatus: "PENDING",
-            ...(counterpartyId && { counterpartyId }),
-          },
-        });
+          const transaction = await prisma.transaction.create({
+            data: {
+              companyId,
+              date: issueDate || new Date(),
+              description: normalizedInstallments.length > 1
+                ? `${descricao || "Transação via documento"} - Parcela ${installmentData.installmentNumber}/${installmentData.totalInstallments}`
+                : descricao || "Transação via documento",
+              amount: installmentData.amount,
+              tipo_transacao: normalizedTipoTransacao,
+              source: "OCR",
+              status: "PENDING",
+              documentId: document.id,
+              obligationId: obligation.id,
+              installmentId: installment.id,
+              ...(resolvedCategoryId && { categoryId: resolvedCategoryId }),
+              ...(counterpartyId && { counterpartyId }),
+              ...(tipoCusto && { tipo_custo: tipoCusto }),
+              ...(tipoCusto && { costConfidence: 0.85 }),
+            } as any,
+          });
+          if (!transactionId) transactionId = transaction.id;
+
+          await prisma.transactionDetail.create({
+            data: {
+              transactionId: transaction.id,
+              dueDate: installmentData.dueDate,
+              amountOriginal: installmentData.amount,
+              documentNumber: installmentData.documentNumber || referencia || null,
+              reconciliationStatus: "PENDING",
+              ...(counterpartyId && { counterpartyId }),
+            },
+          });
+        }
 
         await prismaDynamic.obligationDocument.create({
           data: {
             obligationId: obligation.id,
+            installmentId: firstInstallmentId,
             documentId: document.id,
             role: docRole,
             matchConfidence: 1,
@@ -1185,6 +1382,7 @@ router.post(
         data: {
           transactionId,
           obligationId,
+          installmentId,
           documentId: document.id,
           action,
           documentRole: docRole,

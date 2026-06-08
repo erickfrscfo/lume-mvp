@@ -103,6 +103,70 @@ function average(values: number[]): number {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function addDays(date: Date, days: number): Date {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function mapObligationInstallment(item: any) {
+  const dueDate = item.dueDate ? new Date(item.dueDate) : null;
+  const today = new Date();
+  const daysUntilDue = dueDate ? daysBetween(today, dueDate) : null;
+  const isOverdue = Boolean(dueDate && dueDate < today && item.status !== "PAID");
+
+  return {
+    id: item.id,
+    obligationId: item.obligationId,
+    installmentNumber: item.installmentNumber,
+    totalInstallments: item.totalInstallments,
+    status: isOverdue ? "OVERDUE" : item.status,
+    amount: Number(item.amount),
+    dueDate: item.dueDate,
+    expectedPaymentDate: item.expectedPaymentDate,
+    documentNumber: item.documentNumber,
+    barcode: item.barcode,
+    lateFeeAmount: item.lateFeeAmount ? Number(item.lateFeeAmount) : null,
+    lateFeePercent: item.lateFeePercent ? Number(item.lateFeePercent) : null,
+    lateInterestPercentPerDay: item.lateInterestPercentPerDay ? Number(item.lateInterestPercentPerDay) : null,
+    paymentLimitDate: item.paymentLimitDate,
+    daysUntilDue,
+    isOverdue,
+    obligation: item.obligation ? {
+      id: item.obligation.id,
+      type: item.obligation.type,
+      status: item.obligation.status,
+      source: item.obligation.source,
+      description: item.obligation.description,
+      amount: Number(item.obligation.amount),
+      issueDate: item.obligation.issueDate,
+      dueDate: item.obligation.dueDate,
+      documentNumber: item.obligation.documentNumber,
+      totalInstallments: item.obligation.totalInstallments,
+      taxDetails: item.obligation.taxDetails || [],
+      totalTaxAmount: item.obligation.totalTaxAmount ? Number(item.obligation.totalTaxAmount) : null,
+      totalWithholdingAmount: item.obligation.totalWithholdingAmount ? Number(item.obligation.totalWithholdingAmount) : null,
+      counterparty: item.obligation.counterparty ? {
+        id: item.obligation.counterparty.id,
+        name: item.obligation.counterparty.name,
+        document: item.obligation.counterparty.document,
+        type: item.obligation.counterparty.type,
+      } : null,
+      category: item.obligation.category ? {
+        id: item.obligation.category.id,
+        code: item.obligation.category.code,
+        name: item.obligation.category.name,
+      } : null,
+    } : null,
+    transaction: item.transactions?.[0] ? {
+      id: item.transactions[0].id,
+      status: item.transactions[0].status,
+      amount: Number(item.transactions[0].amount),
+      description: item.transactions[0].description,
+    } : null,
+  };
+}
+
 // ============================================
 // GET /api/financial/dashboard
 // REGIME DE CAIXA: apenas transações COMPLETED, agrupadas por data efetiva
@@ -448,6 +512,86 @@ router.get("/sectors", authMiddleware, async (_req: Request, res: Response) => {
 });
 
 // ============================================
+// GET /api/financial/obligations — Parcelas de obrigações financeiras
+// ============================================
+router.get("/obligations", authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const companyId = (req as any).companyId;
+    const horizonDays = Math.max(30, Math.min(365, parseInt(req.query.horizonDays as string, 10) || 120));
+    const type = req.query.type as string;
+    const status = req.query.status as string;
+    const now = new Date();
+    const horizonDate = addDays(now, horizonDays);
+
+    const where: any = {
+      companyId,
+      dueDate: { lte: horizonDate },
+    };
+
+    if (status && status !== "all") {
+      where.status = status;
+    } else {
+      where.status = { in: ["PENDING", "OVERDUE", "PARTIAL"] };
+    }
+
+    if (type === "PAYABLE" || type === "RECEIVABLE") {
+      where.obligation = { type };
+    }
+
+    const installments = await prismaDynamic.obligationInstallment.findMany({
+      where,
+      include: {
+        obligation: {
+          include: {
+            counterparty: { select: { id: true, name: true, document: true, type: true } },
+            category: { select: { id: true, code: true, name: true } },
+          },
+        },
+        transactions: { select: { id: true, status: true, amount: true, description: true }, take: 1, orderBy: { createdAt: "asc" } },
+      },
+      orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+    });
+
+    const mapped = installments.map(mapObligationInstallment);
+    const buckets = [
+      { key: "overdue", label: "Vencidas", from: -Infinity, to: -1 },
+      { key: "30", label: "Próximos 30 dias", from: 0, to: 30 },
+      { key: "60", label: "31 a 60 dias", from: 31, to: 60 },
+      { key: "90", label: "61 a 90 dias", from: 61, to: 90 },
+      { key: "120", label: "91 a 120 dias", from: 91, to: 120 },
+    ].map((bucket) => {
+      const items = mapped.filter((item: any) => {
+        if (bucket.key === "overdue") return item.isOverdue;
+        if (item.daysUntilDue === null || item.isOverdue) return false;
+        return item.daysUntilDue >= bucket.from && item.daysUntilDue <= bucket.to;
+      });
+      return {
+        ...bucket,
+        count: items.length,
+        totalAmount: items.reduce((sum: number, item: any) => sum + item.amount, 0),
+        items,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        summary: {
+          count: mapped.length,
+          totalAmount: mapped.reduce((sum: number, item: any) => sum + item.amount, 0),
+          overdueAmount: buckets.find((bucket) => bucket.key === "overdue")?.totalAmount || 0,
+          horizonDays,
+        },
+        buckets,
+        installments: mapped,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================
 // GET /api/financial/transactions
 // Adicionados filtros: status, dueDateStart, dueDateEnd
 // ============================================
@@ -537,6 +681,18 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
           category: true,
           counterparty: { select: { id: true, name: true, document: true, type: true } },
           detail: true,
+          installment: {
+            select: {
+              id: true,
+              installmentNumber: true,
+              totalInstallments: true,
+              status: true,
+              amount: true,
+              dueDate: true,
+              documentNumber: true,
+              barcode: true,
+            },
+          },
           obligation: {
             select: {
               id: true,
@@ -597,6 +753,16 @@ router.get("/transactions", authMiddleware, async (req: Request, res: Response, 
           bankReference: t.detail.bankReference,
           reconciliationStatus: t.detail.reconciliationStatus,
           notes: t.detail.notes,
+        } : null,
+        installment: t.installment ? {
+          id: t.installment.id,
+          installmentNumber: t.installment.installmentNumber,
+          totalInstallments: t.installment.totalInstallments,
+          status: t.installment.status,
+          amount: Number(t.installment.amount),
+          dueDate: t.installment.dueDate,
+          documentNumber: t.installment.documentNumber,
+          barcode: t.installment.barcode,
         } : null,
         obligation: t.obligation ? {
           id: t.obligation.id,

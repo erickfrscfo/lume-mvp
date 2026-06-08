@@ -37,6 +37,7 @@ model Company {
   counterparties       Counterparty[]
   documents            Document[]
   financialObligations FinancialObligation[]
+  obligationInstallments ObligationInstallment[]
   aiInsights           AiInsight[]
   companyCategories    CompanyCategory[]
   reportTemplate       ReportTemplate?
@@ -242,12 +243,14 @@ model Transaction {
   counterpartyId String?
   documentId     String?
   obligationId   String?
+  installmentId  String?
 
   company      Company              @relation(fields: [companyId], references: [id])
   upload       Upload?              @relation(fields: [uploadId], references: [id])
   category     Category?            @relation(fields: [categoryId], references: [id])
   counterparty Counterparty?        @relation(fields: [counterpartyId], references: [id])
   obligation   FinancialObligation? @relation(fields: [obligationId], references: [id])
+  installment  ObligationInstallment? @relation(fields: [installmentId], references: [id])
   detail       TransactionDetail?
 
   @@index([companyId, date])
@@ -257,6 +260,7 @@ model Transaction {
   @@index([tipo_custo])
   @@index([counterpartyId])
   @@index([obligationId])
+  @@index([installmentId])
   @@index([status])
 }
 
@@ -405,6 +409,7 @@ model FinancialObligation {
   taxDetails                Json?
   totalTaxAmount            Decimal?         @db.Decimal(15, 2)
   totalWithholdingAmount    Decimal?         @db.Decimal(15, 2)
+  totalInstallments         Int              @default(1)
   confidence                Float            @default(0.5)
   counterpartyId            String?
   categoryId                String?
@@ -415,6 +420,7 @@ model FinancialObligation {
   counterparty        Counterparty?        @relation(fields: [counterpartyId], references: [id])
   category            Category?            @relation(fields: [categoryId], references: [id])
   obligationDocuments ObligationDocument[]
+  installments        ObligationInstallment[]
   transactions        Transaction[]
 
   @@index([companyId])
@@ -427,18 +433,56 @@ model FinancialObligation {
 model ObligationDocument {
   id              String       @id @default(cuid())
   obligationId    String
+  installmentId   String?
   documentId      String
   role            DocumentRole
   matchConfidence Float        @default(1.0)
   createdAt       DateTime     @default(now())
 
-  obligation FinancialObligation @relation(fields: [obligationId], references: [id], onDelete: Cascade)
-  document   Document            @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  obligation  FinancialObligation  @relation(fields: [obligationId], references: [id], onDelete: Cascade)
+  installment ObligationInstallment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
+  document    Document             @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@unique([obligationId, documentId])
   @@index([obligationId])
+  @@index([installmentId])
   @@index([documentId])
   @@index([role])
+}
+
+model ObligationInstallment {
+  id                        String           @id @default(cuid())
+  companyId                 String
+  obligationId              String
+  installmentNumber         Int              @default(1)
+  totalInstallments         Int              @default(1)
+  status                    ObligationStatus @default(PENDING)
+  amount                    Decimal          @db.Decimal(15, 2)
+  dueDate                   DateTime?
+  expectedPaymentDate       DateTime?
+  documentNumber            String?
+  barcode                   String?
+  earlyDiscountAmount       Decimal?         @db.Decimal(15, 2)
+  earlyDiscountPercent      Decimal?         @db.Decimal(5, 2)
+  earlyDiscountValidUntil   DateTime?
+  lateFeeAmount             Decimal?         @db.Decimal(15, 2)
+  lateFeePercent            Decimal?         @db.Decimal(5, 2)
+  lateInterestPercentPerDay Decimal?         @db.Decimal(5, 2)
+  paymentLimitDate          DateTime?
+  confidence                Float            @default(0.5)
+  createdAt                 DateTime         @default(now())
+  updatedAt                 DateTime         @updatedAt
+
+  company             Company              @relation(fields: [companyId], references: [id])
+  obligation          FinancialObligation  @relation(fields: [obligationId], references: [id], onDelete: Cascade)
+  obligationDocuments ObligationDocument[]
+  transactions        Transaction[]
+
+  @@unique([obligationId, installmentNumber])
+  @@index([companyId])
+  @@index([companyId, status])
+  @@index([dueDate])
+  @@index([barcode])
 }
 
 enum ObligationType {
